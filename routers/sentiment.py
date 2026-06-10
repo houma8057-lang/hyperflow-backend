@@ -57,3 +57,34 @@ async def get_history(days: int = 30, db: AsyncSession = Depends(get_db)):
     since = datetime.utcnow() - timedelta(days=days)
     rows = (await db.execute(select(WSIHistory).where(WSIHistory.timestamp >= since).order_by(WSIHistory.timestamp))).scalars().all()
     return [{"timestamp": r.timestamp, "wsi_value": r.wsi_value, "total_long_ntl": r.total_long_ntl, "total_short_ntl": r.total_short_ntl, "reversal_score": r.reversal_score} for r in rows]
+
+@router.get("/sentiment/funding")
+async def get_funding_rates():
+    coins = ["BTC", "ETH", "SOL", "BNB", "DOGE", "HYPE"]
+    result = []
+    async with httpx.AsyncClient(timeout=30) as client:
+        try:
+            resp = await client.post("https://api.hyperliquid.xyz/info", json={"type": "metaAndAssetCtxs"})
+            data = resp.json()
+            if len(data) >= 2:
+                universe = data[0].get("universe", [])
+                ctxs = data[1]
+                for i, asset in enumerate(universe):
+                    name = asset.get("name", "")
+                    if name in coins and i < len(ctxs):
+                        ctx = ctxs[i]
+                        funding = float(ctx.get("funding", 0))
+                        open_interest = float(ctx.get("openInterest", 0))
+                        mark_px = float(ctx.get("markPx", 0))
+                        oi_usd = open_interest * mark_px
+                        annual_funding = funding * 24 * 365 * 100
+                        result.append({
+                            "coin": name,
+                            "funding_rate": round(funding * 100, 6),
+                            "annual_rate": round(annual_funding, 2),
+                            "open_interest_usd": round(oi_usd, 0),
+                            "signal": "BEARISH" if funding > 0.01 else "BULLISH" if funding < -0.01 else "NEUTRAL"
+                        })
+        except:
+            pass
+    return {"funding_rates": result}
