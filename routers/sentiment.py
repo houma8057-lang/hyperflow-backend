@@ -145,3 +145,40 @@ async def get_whale_changes(db: AsyncSession = Depends(get_db)):
         "total_notional": round(total, 2),
         "wallet_count": len(flips)
     }
+
+@router.get("/sentiment/market-context")
+async def get_market_context():
+    async with httpx.AsyncClient(timeout=30) as client:
+        try:
+            resp = await client.post("https://api.hyperliquid.xyz/info", json={"type": "metaAndAssetCtxs"})
+            data = resp.json()
+            price_map = {}
+            oi_map = {}
+            if len(data) >= 2:
+                for i, asset in enumerate(data[0].get("universe", [])):
+                    try:
+                        name = asset["name"]
+                        ctx = data[1][i]
+                        price_map[name] = float(ctx.get("markPx", 0))
+                        oi_map[name] = float(ctx.get("openInterest", 0)) * float(ctx.get("markPx", 0))
+                    except:
+                        pass
+            
+            btc_price = price_map.get("BTC", 0)
+            eth_price = price_map.get("ETH", 0)
+            sol_price = price_map.get("SOL", 0)
+            
+            btc_oi = oi_map.get("BTC", 0)
+            eth_oi = oi_map.get("ETH", 0)
+            total_oi = sum(oi_map.values())
+            
+            return {
+                "btc_price": round(btc_price, 2),
+                "eth_price": round(eth_price, 2),
+                "sol_price": round(sol_price, 2),
+                "btc_oi": round(btc_oi, 0),
+                "eth_oi": round(eth_oi, 0),
+                "total_oi": round(total_oi, 0)
+            }
+        except:
+            return {"btc_price": 0, "eth_price": 0, "sol_price": 0, "btc_oi": 0, "eth_oi": 0, "total_oi": 0}
