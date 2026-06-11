@@ -182,3 +182,60 @@ async def get_market_context():
             }
         except:
             return {"btc_price": 0, "eth_price": 0, "sol_price": 0, "btc_oi": 0, "eth_oi": 0, "total_oi": 0}
+
+@router.get("/sentiment/reversal-score")
+async def get_reversal_score(db: AsyncSession = Depends(get_db)):
+    try:
+        # 1. WSI
+        wsi_data = await fetch_wsi_live(db)
+        wsi = wsi_data.get("wsi", 0)
+        wsi_score = wsi * 100
+
+        # 2. Funding Rate
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post("https://api.hyperliquid.xyz/info", json={"type": "metaAndAssetCtxs"})
+            data = resp.json()
+            funding_rates = []
+            if len(data) >= 2:
+                for i, asset in enumerate(data[0].get("universe", [])):
+                    if asset["name"] in ["BTC", "ETH", "SOL"]:
+                        try:
+                            funding_rates.append(float(data[1][i].get("funding", 0)))
+                        except:
+                            pass
+            avg_funding = sum(funding_rates) / len(funding_rates) if funding_rates else 0
+            funding_score = avg_funding * 10000
+
+        # 3. Leverage
+        wallets = (await db.execute(select(Wallet))).scalars().all()
+        leverage_scores = []
+        async with httpx.AsyncClient(timeout=30) as client:
+            for wallet in wallets:
+                resp = await client.post("https://api.hyperliquid.xyz/info", json={"type": "clearinghouseState", "user": wallet.address})
+                positions = resp.json().get("assetPositions", [])
+                for ap in positions:
+                    lev = float(ap.get("position", {}).get("leverage", {}).get("value", 1))
+                    leverage_scores.append(lev)
+        avg_leverage = sum(leverage_scores) / len(leverage_scores) if leverage_scores else 1
+        leverage_score = min((avg_leverage - 1) / 19 * 100, 100)
+
+        # Combined Score (weighted)
+        combined = (wsi_score * 0.4) + (funding_score * 0.3) + (leverage_score * 0.3 * (-1 if wsi < 0 else 1))
+        combined = max(-100, min(100, combined))
+
+        signal = "STRONG BOTTOM" if combined < -60 else "WEAK BOTTOM" if combined < -30 else "STRONG TOP" if combined > 60 else "WEAK TOP" if combined > 30 else "NEUTRAL"
+
+        return {
+            "score": round(combined, 1),
+            "signal": signal,
+            "components": {
+                "wsi": round(wsi, 3),
+                "wsi_score": round(wsi_score, 1),
+                "avg_funding": round(avg_funding * 100, 4),
+                "funding_score": round(funding_score, 1),
+                "avg_leverage": round(avg_leverage, 1),
+                "leverage_score": round(leverage_score, 1)
+            }
+        }
+    except Exception as e:
+        return {"score": 0, "signal": "ERROR", "components": {}}
