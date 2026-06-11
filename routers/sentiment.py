@@ -330,3 +330,56 @@ async def get_oi_divergence(db: AsyncSession = Depends(get_db)):
         }
     except Exception as e:
         return {"divergence": 0, "signal": "Collecting data...", "details": []}
+
+@router.get("/sentiment/oi-divergence-v2")
+async def get_oi_divergence_v2(db: AsyncSession = Depends(get_db)):
+    from models import OIHistory
+    from sqlalchemy import func as sqlfunc
+    
+    try:
+        coins = ["BTC", "ETH", "SOL", "BNB", "DOGE", "HYPE"]
+        details = []
+        total_divergence = 0
+        count = 0
+
+        for coin in coins:
+            latest = (await db.execute(
+                select(OIHistory).where(OIHistory.coin == coin)
+                .order_by(desc(OIHistory.timestamp)).limit(1)
+            )).scalar_one_or_none()
+
+            oldest = (await db.execute(
+                select(OIHistory).where(OIHistory.coin == coin)
+                .order_by(OIHistory.timestamp).limit(1)
+            )).scalar_one_or_none()
+
+            if latest and oldest and oldest.open_interest_usd > 0:
+                pct_change = ((latest.open_interest_usd - oldest.open_interest_usd) / oldest.open_interest_usd) * 100
+                details.append({
+                    "coin": coin,
+                    "current_oi": round(latest.open_interest_usd, 0),
+                    "base_oi": round(oldest.open_interest_usd, 0),
+                    "pct_change": round(pct_change, 2)
+                })
+                total_divergence += pct_change
+                count += 1
+
+        if count == 0:
+            return {"divergence": 0, "signal": "Collecting data...", "details": []}
+
+        avg_divergence = total_divergence / count
+
+        if avg_divergence > 10:
+            signal = "OI Expanding — Trend Continuation"
+        elif avg_divergence < -10:
+            signal = "OI Contracting — Possible Reversal"
+        else:
+            signal = "Neutral — watch for breakout"
+
+        return {
+            "divergence": round(avg_divergence, 2),
+            "signal": signal,
+            "details": details
+        }
+    except Exception as e:
+        return {"divergence": 0, "signal": "Error", "details": []}
