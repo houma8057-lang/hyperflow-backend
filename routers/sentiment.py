@@ -88,3 +88,60 @@ async def get_funding_rates():
         except:
             pass
     return {"funding_rates": result}
+
+@router.get("/sentiment/whale-changes")
+async def get_whale_changes(db: AsyncSession = Depends(get_db)):
+    wallets = (await db.execute(select(Wallet))).scalars().all()
+    if not wallets:
+        return {"flips": [], "total_change_pct": 0}
+    
+    async with httpx.AsyncClient(timeout=30) as client:
+        try:
+            meta_resp = await client.post("https://api.hyperliquid.xyz/info", json={"type": "metaAndAssetCtxs"})
+            meta_data = meta_resp.json()
+            price_map = {}
+            if len(meta_data) >= 2:
+                for i, asset in enumerate(meta_data[0].get("universe", [])):
+                    try:
+                        price_map[asset["name"]] = float(meta_data[1][i]["markPx"])
+                    except:
+                        pass
+
+            flips = []
+            for wallet in wallets:
+                resp = await client.post("https://api.hyperliquid.xyz/info", json={"type": "clearinghouseState", "user": wallet.address})
+                data = resp.json()
+                positions = []
+                total_value = 0
+                for ap in data.get("assetPositions", []):
+                    pos = ap.get("position", {})
+                    szi = float(pos.get("szi", 0))
+                    coin = pos.get("coin", "")
+                    mark_px = price_map.get(coin, 0)
+                    if mark_px == 0 or szi == 0:
+                        continue
+                    notional = abs(szi) * mark_px
+                    total_value += notional
+                    positions.append({
+                        "coin": coin,
+                        "side": "LONG" if szi > 0 else "SHORT",
+                        "notional": round(notional, 2),
+                        "leverage": float(pos.get("leverage", {}).get("value", 1))
+                    })
+                
+                flips.append({
+                    "address": wallet.address,
+                    "label": wallet.label,
+                    "total_value": round(total_value, 2),
+                    "positions": positions,
+                    "dominant_side": "LONG" if sum(p["notional"] for p in positions if p["side"]=="LONG") > sum(p["notional"] for p in positions if p["side"]=="SHORT") else "SHORT"
+                })
+        except:
+            return {"flips": [], "total_change_pct": 0}
+
+    total = sum(w["total_value"] for w in flips)
+    return {
+        "flips": flips,
+        "total_notional": round(total, 2),
+        "wallet_count": len(flips)
+    }
