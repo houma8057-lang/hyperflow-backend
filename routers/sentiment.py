@@ -239,3 +239,94 @@ async def get_reversal_score(db: AsyncSession = Depends(get_db)):
         }
     except Exception as e:
         return {"score": 0, "signal": "ERROR", "components": {}}
+
+@router.post("/sentiment/oi-snapshot")
+async def save_oi_snapshot(db: AsyncSession = Depends(get_db)):
+    from models import OIHistory
+    async with httpx.AsyncClient(timeout=30) as client:
+        try:
+            resp = await client.post("https://api.hyperliquid.xyz/info", json={"type": "metaAndAssetCtxs"})
+            data = resp.json()
+            if len(data) >= 2:
+                for i, asset in enumerate(data[0].get("universe", [])):
+                    if asset["name"] in ["BTC", "ETH", "SOL", "BNB", "DOGE", "HYPE"]:
+                        try:
+                            ctx = data[1][i]
+                            mark_px = float(ctx.get("markPx", 0))
+                            oi = float(ctx.get("openInterest", 0)) * mark_px
+                            db.add(OIHistory(
+                                coin=asset["name"],
+                                open_interest_usd=oi,
+                                mark_price=mark_px
+                            ))
+                        except:
+                            pass
+            await db.commit()
+            return {"status": "saved"}
+        except Exception as e:
+            return {"status": "error", "detail": str(e)}
+
+@router.get("/sentiment/oi-divergence")
+async def get_oi_divergence(db: AsyncSession = Depends(get_db)):
+    from models import OIHistory
+    from sqlalchemy import func as sqlfunc
+    from datetime import datetime, timedelta
+    
+    now = datetime.utcnow()
+    since_7d = now - timedelta(days=7)
+    since_1h = now - timedelta(hours=2)
+    
+    try:
+        # Current OI (last 2 hours average)
+        current = (await db.execute(
+            select(OIHistory.coin, sqlfunc.avg(OIHistory.open_interest_usd).label("avg_oi"))
+            .where(OIHistory.timestamp >= since_1h)
+            .group_by(OIHistory.coin)
+        )).all()
+
+        # 7-day average OI
+        historical = (await db.execute(
+            select(OIHistory.coin, sqlfunc.avg(OIHistory.open_interest_usd).label("avg_oi"))
+            .where(OIHistory.timestamp >= since_7d)
+            .where(OIHistory.timestamp < since_1h)
+            .group_by(OIHistory.coin)
+        )).all()
+
+        if not current or not historical:
+            return {"divergence": 0, "signal": "Collecting data...", "details": []}
+
+        current_map = {r.coin: r.avg_oi for r in current}
+        historical_map = {r.coin: r.avg_oi for r in historical}
+
+        details = []
+        total_divergence = 0
+        count = 0
+
+        for coin in current_map:
+            if coin in historical_map and historical_map[coin] > 0:
+                pct_change = ((current_map[coin] - historical_map[coin]) / historical_map[coin]) * 100
+                details.append({
+                    "coin": coin,
+                    "current_oi": round(current_map[coin], 0),
+                    "historical_avg": round(historical_map[coin], 0),
+                    "pct_change": round(pct_change, 2)
+                })
+                total_divergence += pct_change
+                count += 1
+
+        avg_divergence = total_divergence / count if count > 0 else 0
+        
+        if avg_divergence > 15:
+            signal = "OI Expanding — Trend Continuation"
+        elif avg_divergence < -15:
+            signal = "OI Contracting — Possible Reversal"
+        else:
+            signal = "Neutral — watch for breakout"
+
+        return {
+            "divergence": round(avg_divergence, 2),
+            "signal": signal,
+            "details": details
+        }
+    except Exception as e:
+        return {"divergence": 0, "signal": "Collecting data...", "details": []}

@@ -1,12 +1,13 @@
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from database import AsyncSessionLocal
-from models import Wallet, WSIHistory, PositionSnapshot, Alert, SystemSettings
+from models import Wallet, WSIHistory, PositionSnapshot, Alert, SystemSettings, OIHistory
 from services.hyperliquid import get_clearinghouse_state, get_meta_and_asset_ctxs
 from services.defillama import get_dry_powder
 from services.calculations import WSICalculator
 from sqlalchemy import select, desc
 from datetime import datetime, timedelta
 import asyncio
+import httpx
 
 scheduler = AsyncIOScheduler()
 
@@ -57,6 +58,31 @@ async def snapshot_job():
             db.add(alert)
         await db.commit()
 
+async def oi_snapshot_job():
+    async with AsyncSessionLocal() as db:
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post("https://api.hyperliquid.xyz/info", json={"type": "metaAndAssetCtxs"})
+                data = resp.json()
+                if len(data) >= 2:
+                    for i, asset in enumerate(data[0].get("universe", [])):
+                        if asset["name"] in ["BTC", "ETH", "SOL", "BNB", "DOGE", "HYPE"]:
+                            try:
+                                ctx = data[1][i]
+                                mark_px = float(ctx.get("markPx", 0))
+                                oi = float(ctx.get("openInterest", 0)) * mark_px
+                                db.add(OIHistory(
+                                    coin=asset["name"],
+                                    open_interest_usd=oi,
+                                    mark_price=mark_px
+                                ))
+                            except:
+                                pass
+            await db.commit()
+        except:
+            pass
+
 def start_scheduler():
     scheduler.add_job(snapshot_job, "interval", minutes=5)
+    scheduler.add_job(oi_snapshot_job, "interval", hours=1)
     scheduler.start()
