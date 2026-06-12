@@ -204,7 +204,7 @@ async def get_reversal_score(db: AsyncSession = Depends(get_db)):
                         except:
                             pass
             avg_funding = sum(funding_rates) / len(funding_rates) if funding_rates else 0
-            funding_score = avg_funding * 10000
+            funding_score = avg_funding * 100000
 
         # 3. Leverage
         wallets = (await db.execute(select(Wallet))).scalars().all()
