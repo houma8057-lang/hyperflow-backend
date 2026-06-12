@@ -203,7 +203,7 @@ async def get_reversal_score(db: AsyncSession = Depends(get_db)):
                             funding_rates.append(float(data[1][i].get("funding", 0)))
                         except:
                             pass
-            avg_funding = sum(funding_rates) / len(funding_rates) if funding_rates else 0
+                        avg_funding = funding_rates[0] if len(funding_rates) > 0 else 0
             funding_score = avg_funding * 100000
 
         # 3. Leverage
