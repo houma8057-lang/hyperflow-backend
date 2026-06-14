@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 from database import get_db
 from models import WSIHistory, Wallet
+from services.calculations import WSICalculator
 from datetime import datetime
 import httpx
 
@@ -13,15 +14,16 @@ async def calculate_signal(db: AsyncSession):
     wallets = (await db.execute(select(Wallet))).scalars().all()
     if not wallets:
         return None
-    
+
     latest_wsi = (await db.execute(
         select(WSIHistory).order_by(desc(WSIHistory.timestamp)).limit(1)
     )).scalar_one_or_none()
-    
+
     wsi = latest_wsi.wsi_value if latest_wsi else 0
 
     # 2. Funding Rate (BTC)
     avg_funding = 0
+    btc_price = 0
     async with httpx.AsyncClient(timeout=15) as client:
         try:
             resp = await client.post("https://api.hyperliquid.xyz/info", json={"type": "metaAndAssetCtxs"})
@@ -30,20 +32,22 @@ async def calculate_signal(db: AsyncSession):
                 for i, asset in enumerate(data[0].get("universe", [])):
                     if asset["name"] == "BTC":
                         avg_funding = float(data[1][i].get("funding", 0))
+                        btc_price = float(data[1][i].get("markPx", 0))
                         break
-            
-            # BTC Price
-            btc_price = 0
-            for i, asset in enumerate(data[0].get("universe", [])):
-                if asset["name"] == "BTC":
-                    btc_price = float(data[1][i].get("markPx", 0))
-                    break
         except:
-            btc_price = 0
+            pass
 
-    # 3. Whale Direction
-    whale_short = False
-    whale_long = False
+    # 3. Whale Direction with Delta
+    whale_closing_short = False
+    whale_closing_long = False
+    whale_heavy_short = False
+    whale_heavy_long = False
+    whale_delta_info = {
+        "short_delta_pct": 0,
+        "long_delta_pct": 0,
+        "has_history": False
+    }
+
     async with httpx.AsyncClient(timeout=20) as client:
         try:
             total_long = 0
@@ -57,10 +61,13 @@ async def calculate_signal(db: AsyncSession):
                         price_map[asset["name"]] = float(meta_data[1][i]["markPx"])
                     except:
                         pass
-            
+
+            all_wallet_states = []
             for wallet in wallets:
                 resp = await client.post("https://api.hyperliquid.xyz/info", json={"type": "clearinghouseState", "user": wallet.address})
                 data = resp.json()
+                data["wallet_address"] = wallet.address
+                all_wallet_states.append(data)
                 for ap in data.get("assetPositions", []):
                     pos = ap.get("position", {})
                     szi = float(pos.get("szi", 0))
@@ -73,24 +80,32 @@ async def calculate_signal(db: AsyncSession):
                         total_long += notional
                     else:
                         total_short += notional
-            
+
             total = total_long + total_short
             if total > 0:
-                whale_short = total_short / total > 0.65
-                whale_long = total_long / total > 0.65
+                whale_heavy_short = total_short / total > 0.65
+                whale_heavy_long = total_long / total > 0.65
+
+            # Calculate delta
+            calc = WSICalculator()
+            delta = await calc.calculate_whale_delta(db, all_wallet_states, price_map)
+            whale_delta_info = delta
+            whale_closing_short = delta.get("closing_short", False)
+            whale_closing_long = delta.get("closing_long", False)
+
         except:
             pass
 
-    # Signal Logic
+    # Signal Logic — NEW: use closing instead of just heavy
     buy_conditions = [
         wsi <= -0.8,
         avg_funding < -0.001,
-        whale_short
+        whale_closing_short  # Was: whale_heavy_short
     ]
     sell_conditions = [
         wsi >= 0.8,
         avg_funding > 0.001,
-        whale_long
+        whale_closing_long   # Was: whale_heavy_long
     ]
 
     buy_count = sum(buy_conditions)
@@ -114,8 +129,11 @@ async def calculate_signal(db: AsyncSession):
             "funding": round(avg_funding * 100, 4),
             "funding_met_buy": avg_funding < -0.001,
             "funding_met_sell": avg_funding > 0.001,
-            "whale_short": whale_short,
-            "whale_long": whale_long
+            "whale_short": whale_heavy_short,
+            "whale_long": whale_heavy_long,
+            "whale_closing_short": whale_closing_short,
+            "whale_closing_long": whale_closing_long,
+            "whale_delta": whale_delta_info
         },
         "buy_conditions_met": buy_count,
         "sell_conditions_met": sell_count
@@ -134,15 +152,15 @@ async def save_signal(db: AsyncSession = Depends(get_db)):
     result = await calculate_signal(db)
     if not result:
         return {"status": "no wallets"}
-    
+
     confidence = max(result["buy_conditions_met"], result["sell_conditions_met"]) / 3 * 100
-    
+
     db.add(SignalHistory(
         signal=result["signal"],
         btc_price=result["btc_price"],
         wsi=result["conditions"]["wsi"],
         funding=result["conditions"]["funding"],
-        whale_short=1.0 if result["conditions"]["whale_short"] else 0.0,
+        whale_short=1.0 if result["conditions"]["whale_closing_short"] else 0.0,
         buy_conditions_met=result["buy_conditions_met"],
         sell_conditions_met=result["sell_conditions_met"],
         confidence=round(confidence, 1)
