@@ -27,3 +27,7 @@ async def startup():
 @app.get("/")
 def root():
     return {"status": "HyperFlow API running"}
+
+@app.get("/ping")
+def ping():
+    return {"status": "alive", "service": "HyperFlow Backend"}
