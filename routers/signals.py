@@ -127,3 +127,46 @@ async def get_current_signal(db: AsyncSession = Depends(get_db)):
     if not result:
         return {"signal": "NEUTRAL", "btc_price": 0, "conditions": {}, "buy_conditions_met": 0, "sell_conditions_met": 0}
     return result
+
+@router.post("/signals/save")
+async def save_signal(db: AsyncSession = Depends(get_db)):
+    from models import SignalHistory
+    result = await calculate_signal(db)
+    if not result:
+        return {"status": "no wallets"}
+    
+    confidence = max(result["buy_conditions_met"], result["sell_conditions_met"]) / 3 * 100
+    
+    db.add(SignalHistory(
+        signal=result["signal"],
+        btc_price=result["btc_price"],
+        wsi=result["conditions"]["wsi"],
+        funding=result["conditions"]["funding"],
+        whale_short=1.0 if result["conditions"]["whale_short"] else 0.0,
+        buy_conditions_met=result["buy_conditions_met"],
+        sell_conditions_met=result["sell_conditions_met"],
+        confidence=round(confidence, 1)
+    ))
+    await db.commit()
+    return {"status": "saved", "signal": result["signal"]}
+
+@router.get("/signals/history")
+async def get_signal_history(db: AsyncSession = Depends(get_db)):
+    from models import SignalHistory
+    from sqlalchemy import desc
+    rows = (await db.execute(
+        select(SignalHistory).order_by(desc(SignalHistory.timestamp)).limit(50)
+    )).scalars().all()
+    return {"history": [
+        {
+            "id": r.id,
+            "timestamp": r.timestamp.isoformat(),
+            "signal": r.signal,
+            "btc_price": r.btc_price,
+            "wsi": r.wsi,
+            "funding": r.funding,
+            "buy_conditions_met": r.buy_conditions_met,
+            "sell_conditions_met": r.sell_conditions_met,
+            "confidence": r.confidence
+        } for r in rows
+    ]}

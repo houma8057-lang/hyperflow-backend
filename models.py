@@ -57,3 +57,16 @@ class OIHistory(Base):
     coin = Column(String, nullable=False)
     open_interest_usd = Column(Float, nullable=False)
     mark_price = Column(Float, nullable=False)
+
+class SignalHistory(Base):
+    __tablename__ = "signal_history"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    timestamp = Column(DateTime, default=func.now())
+    signal = Column(String, nullable=False)
+    btc_price = Column(Float, nullable=False)
+    wsi = Column(Float, nullable=False)
+    funding = Column(Float, nullable=False)
+    whale_short = Column(Float, nullable=False)
+    buy_conditions_met = Column(Integer, nullable=False)
+    sell_conditions_met = Column(Integer, nullable=False)
+    confidence = Column(Float, nullable=False, default=0.0)
