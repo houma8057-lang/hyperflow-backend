@@ -82,7 +82,31 @@ async def oi_snapshot_job():
         except:
             pass
 
+async def signal_save_job():
+    async with AsyncSessionLocal() as db:
+        try:
+            from routers.signals import calculate_signal
+            from models import SignalHistory
+            result = await calculate_signal(db)
+            if not result:
+                return
+            confidence = max(result["buy_conditions_met"], result["sell_conditions_met"]) / 3 * 100
+            db.add(SignalHistory(
+                signal=result["signal"],
+                btc_price=result["btc_price"],
+                wsi=result["conditions"]["wsi"],
+                funding=result["conditions"]["funding"],
+                whale_short=1.0 if result["conditions"]["whale_short"] else 0.0,
+                buy_conditions_met=result["buy_conditions_met"],
+                sell_conditions_met=result["sell_conditions_met"],
+                confidence=round(confidence, 1)
+            ))
+            await db.commit()
+        except:
+            pass
+
 def start_scheduler():
     scheduler.add_job(snapshot_job, "interval", minutes=5)
     scheduler.add_job(oi_snapshot_job, "interval", hours=1)
+    scheduler.add_job(signal_save_job, "interval", minutes=5)
     scheduler.start()
