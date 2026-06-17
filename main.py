@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from database import init_db
-from routers import wallets, sentiment, positions, liquidity, settings, signals
+from routers import wallets, sentiment, positions, liquidity, settings, signals, regime
 from tasks.scheduler import start_scheduler
 from tasks.keepalive import start_keepalive
 
@@ -20,6 +20,7 @@ app.include_router(positions.router, prefix="/api")
 app.include_router(liquidity.router, prefix="/api")
 app.include_router(settings.router, prefix="/api")
 app.include_router(signals.router, prefix="/api")
+app.include_router(regime.router, prefix="/api")
 
 @app.on_event("startup")
 async def startup():
