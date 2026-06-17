@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from database import init_db
 from routers import wallets, sentiment, positions, liquidity, settings, signals
 from tasks.scheduler import start_scheduler
+from tasks.keepalive import start_keepalive
 
 app = FastAPI(title="HyperFlow API")
 
@@ -24,6 +25,7 @@ app.include_router(signals.router, prefix="/api")
 async def startup():
     await init_db()
     start_scheduler()
+    start_keepalive()
 
 @app.get("/")
 def root():
