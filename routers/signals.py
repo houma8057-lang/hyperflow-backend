@@ -96,16 +96,16 @@ async def calculate_signal(db: AsyncSession):
         except:
             pass
 
-    # Signal Logic — NEW: use closing instead of just heavy
+    # Signal Logic
     buy_conditions = [
         wsi <= -0.8,
         avg_funding < -0.001,
-        whale_closing_short  # Was: whale_heavy_short
+        whale_closing_short
     ]
     sell_conditions = [
         wsi >= 0.8,
         avg_funding > 0.001,
-        whale_closing_long   # Was: whale_heavy_long
+        whale_closing_long
     ]
 
     buy_count = sum(buy_conditions)
@@ -155,12 +155,14 @@ async def save_signal(db: AsyncSession = Depends(get_db)):
 
     confidence = max(result["buy_conditions_met"], result["sell_conditions_met"]) / 3 * 100
 
+    # FIX: Save both whale_closing_short AND whale_closing_long
     db.add(SignalHistory(
         signal=result["signal"],
         btc_price=result["btc_price"],
         wsi=result["conditions"]["wsi"],
         funding=result["conditions"]["funding"],
         whale_short=1.0 if result["conditions"]["whale_closing_short"] else 0.0,
+        whale_long=1.0 if result["conditions"]["whale_closing_long"] else 0.0,
         buy_conditions_met=result["buy_conditions_met"],
         sell_conditions_met=result["sell_conditions_met"],
         confidence=round(confidence, 1)
@@ -183,6 +185,8 @@ async def get_signal_history(db: AsyncSession = Depends(get_db)):
             "btc_price": r.btc_price,
             "wsi": r.wsi,
             "funding": r.funding,
+            "whale_short": r.whale_short,
+            "whale_long": r.whale_long,
             "buy_conditions_met": r.buy_conditions_met,
             "sell_conditions_met": r.sell_conditions_met,
             "confidence": r.confidence
