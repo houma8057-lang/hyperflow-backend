@@ -67,6 +67,8 @@ class SignalHistory(Base):
     wsi = Column(Float, nullable=False)
     funding = Column(Float, nullable=False)
     whale_short = Column(Float, nullable=False)
+    whale_long = Column(Float, nullable=False, default=0.0)
     buy_conditions_met = Column(Integer, nullable=False)
     sell_conditions_met = Column(Integer, nullable=False)
     confidence = Column(Float, nullable=False, default=0.0)
+    regime_data = Column(Text, nullable=True)
