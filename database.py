@@ -23,27 +23,52 @@ async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         
-        # Migration: add new columns if they don't exist
+        # Migration: run once only using schema_version tracking
         if "asyncpg" in DATABASE_URL:
-            # Check and add whale_long
+            # Check if schema_version table exists
             result = await conn.execute(text("""
-                SELECT column_name FROM information_schema.columns 
-                WHERE table_name = 'signal_history' AND column_name = 'whale_long'
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'schema_version'
+                )
             """))
-            if not result.scalar():
-                await conn.execute(text("""
-                    ALTER TABLE signal_history ADD COLUMN whale_long FLOAT DEFAULT 0.0
-                """))
+            has_version_table = result.scalar()
             
-            # Check and add regime_data
-            result = await conn.execute(text("""
-                SELECT column_name FROM information_schema.columns 
-                WHERE table_name = 'signal_history' AND column_name = 'regime_data'
-            """))
-            if not result.scalar():
+            if not has_version_table:
                 await conn.execute(text("""
-                    ALTER TABLE signal_history ADD COLUMN regime_data TEXT
+                    CREATE TABLE schema_version (
+                        id INTEGER PRIMARY KEY,
+                        version INTEGER NOT NULL DEFAULT 0,
+                        applied_at TIMESTAMP DEFAULT NOW()
+                    )
                 """))
+                await conn.execute(text("INSERT INTO schema_version (id, version) VALUES (1, 0)"))
+            
+            # Check current version
+            result = await conn.execute(text("SELECT version FROM schema_version WHERE id = 1"))
+            current_version = result.scalar() or 0
+            
+            # Migration v1: add whale_long and regime_data
+            if current_version < 1:
+                # Check if columns exist before adding
+                for col_name in ['whale_long', 'regime_data']:
+                    result = await conn.execute(text(f"""
+                        SELECT column_name FROM information_schema.columns 
+                        WHERE table_name = 'signal_history' AND column_name = '{col_name}'
+                    """))
+                    if not result.scalar():
+                        if col_name == 'whale_long':
+                            await conn.execute(text("""
+                                ALTER TABLE signal_history ADD COLUMN whale_long FLOAT
+                            """))
+                        else:
+                            await conn.execute(text("""
+                                ALTER TABLE signal_history ADD COLUMN regime_data TEXT
+                            """))
+                
+                # Update version
+                await conn.execute(text("UPDATE schema_version SET version = 1 WHERE id = 1"))
+                print("Migration v1 applied: added whale_long and regime_data")
 
 async def get_db():
     async with AsyncSessionLocal() as session:
