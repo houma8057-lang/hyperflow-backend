@@ -201,11 +201,15 @@ class WhaleRegimeDetector:
                 total_equity += equity
                 total_position_notional += wallet_notional
                 
-                # FLAG: utilization > 100% indicates potential data error or near-liquidation
-                if wallet_util > 10:  # 10x = extremely high, likely data error
+                # FLAG: tiered warnings by actual severity, not one bucket for everything
+                if wallet_util > 10:
                     self.warnings.append(f"Wallet {wallet_addr[:8]}... utilization={wallet_util:.1f}x - possible data error")
-                elif wallet_util > 1:
+                elif wallet_util > 8:
+                    self.warnings.append(f"Wallet {wallet_addr[:8]}... utilization={wallet_util:.1f}x - very high leverage")
+                elif wallet_util > 4:
                     self.warnings.append(f"Wallet {wallet_addr[:8]}... utilization={wallet_util:.1f}x - high leverage")
+                elif wallet_util > 1:
+                    self.warnings.append(f"Wallet {wallet_addr[:8]}... utilization={wallet_util:.1f}x - moderate leverage")
             
             if total_equity <= 0:
                 self.dimensions["wallet_dry_powder"] = {
