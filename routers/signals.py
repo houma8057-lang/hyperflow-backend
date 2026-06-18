@@ -4,6 +4,7 @@ from sqlalchemy import select, desc
 from database import get_db
 from models import WSIHistory, Wallet
 from services.calculations import WSICalculator
+from services.regime import WhaleRegimeDetector
 from datetime import datetime
 import httpx
 import asyncio
@@ -26,7 +27,7 @@ async def fetch_wallet_state(client: httpx.AsyncClient, wallet: Wallet):
         return data
 
 async def fetch_meta_and_prices(client: httpx.AsyncClient):
-    """Fetch meta + asset contexts once, return price map."""
+    """Fetch meta + asset contexts once, return price map + funding."""
     resp = await client.post(
         "https://api.hyperliquid.xyz/info",
         json={"type": "metaAndAssetCtxs"},
@@ -75,14 +76,9 @@ async def calculate_signal(db: AsyncSession):
 
     # 2. Fetch meta + all wallet states in parallel (rate-limited)
     async with httpx.AsyncClient(timeout=20) as client:
-        # Fetch meta once
         price_map, avg_funding, btc_price = await fetch_meta_and_prices(client)
-        
-        # Fetch all wallets concurrently with semaphore
         wallet_tasks = [fetch_wallet_state(client, w) for w in wallets]
         all_wallet_states = await asyncio.gather(*wallet_tasks, return_exceptions=True)
-        
-        # Filter out exceptions
         all_wallet_states = [
             ws for ws in all_wallet_states 
             if not isinstance(ws, Exception)
@@ -122,13 +118,26 @@ async def calculate_signal(db: AsyncSession):
             whale_heavy_short = total_short / total > 0.65
             whale_heavy_long = total_long / total > 0.65
 
-        # Calculate delta
         calc = WSICalculator()
         delta = await calc.calculate_whale_delta(db, all_wallet_states, price_map)
         whale_delta_info = delta
         whale_closing_short = delta.get("closing_short", False)
         whale_closing_long = delta.get("closing_long", False)
 
+    except Exception:
+        pass
+
+    # 4. Regime Score (NEW — reuse fetched data, no extra HTTP)
+    regime_score = None
+    try:
+        detector = WhaleRegimeDetector(db)
+        regime_result = await detector.calculate(
+            current_wsi=wsi,
+            funding_rate=avg_funding,
+            whale_states=all_wallet_states,
+            price_map=price_map
+        )
+        regime_score = regime_result.get("score")
     except Exception:
         pass
 
@@ -158,6 +167,7 @@ async def calculate_signal(db: AsyncSession):
         "signal": signal,
         "btc_price": round(btc_price, 2),
         "timestamp": datetime.utcnow().isoformat(),
+        "regime_score": regime_score,  # NEW
         "conditions": {
             "wsi": round(wsi, 3),
             "wsi_met_buy": wsi <= -0.8,
@@ -179,7 +189,7 @@ async def calculate_signal(db: AsyncSession):
 async def get_current_signal(db: AsyncSession = Depends(get_db)):
     result = await calculate_signal(db)
     if not result:
-        return {"signal": "NEUTRAL", "btc_price": 0, "conditions": {}, "buy_conditions_met": 0, "sell_conditions_met": 0}
+        return {"signal": "NEUTRAL", "btc_price": 0, "regime_score": None, "conditions": {}, "buy_conditions_met": 0, "sell_conditions_met": 0}
     return result
 
 @router.post("/signals/save")
@@ -191,8 +201,6 @@ async def save_signal(db: AsyncSession = Depends(get_db)):
 
     confidence = max(result["buy_conditions_met"], result["sell_conditions_met"]) / 3 * 100
 
-    # FIX: Save both whale_closing_short AND whale_closing_long
-    # NULL if condition not met (pre-migration or unknown)
     db.add(SignalHistory(
         signal=result["signal"],
         btc_price=result["btc_price"],
@@ -200,6 +208,7 @@ async def save_signal(db: AsyncSession = Depends(get_db)):
         funding=result["conditions"]["funding"],
         whale_short=1.0 if result["conditions"]["whale_closing_short"] else 0.0,
         whale_long=1.0 if result["conditions"]["whale_closing_long"] else 0.0,
+        regime_score=result.get("regime_score"),  # NEW: NULL if detector failed
         buy_conditions_met=result["buy_conditions_met"],
         sell_conditions_met=result["sell_conditions_met"],
         confidence=round(confidence, 1)
@@ -221,6 +230,7 @@ async def get_signal_history(db: AsyncSession = Depends(get_db)):
             "btc_price": r.btc_price,
             "wsi": r.wsi,
             "funding": r.funding,
+            "regime_score": r.regime_score,  # NEW
             "whale_short": format_whale_value(r.whale_short),
             "whale_long": format_whale_value(r.whale_long),
             "buy_conditions_met": r.buy_conditions_met,
