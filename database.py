@@ -22,18 +22,18 @@ async def init_db():
     from models import Wallet, WSIHistory, PositionSnapshot, Alert, SystemSettings, SignalHistory
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        
+
         # Migration: run once only using schema_version tracking
         if "asyncpg" in DATABASE_URL:
             # Check if schema_version table exists
             result = await conn.execute(text("""
                 SELECT EXISTS (
-                    SELECT FROM information_schema.tables 
+                    SELECT FROM information_schema.tables
                     WHERE table_name = 'schema_version'
                 )
             """))
             has_version_table = result.scalar()
-            
+
             if not has_version_table:
                 await conn.execute(text("""
                     CREATE TABLE schema_version (
@@ -43,17 +43,16 @@ async def init_db():
                     )
                 """))
                 await conn.execute(text("INSERT INTO schema_version (id, version) VALUES (1, 0)"))
-            
+
             # Check current version
             result = await conn.execute(text("SELECT version FROM schema_version WHERE id = 1"))
             current_version = result.scalar() or 0
-            
+
             # Migration v1: add whale_long and regime_data
             if current_version < 1:
-                # Check if columns exist before adding
                 for col_name in ['whale_long', 'regime_data']:
                     result = await conn.execute(text(f"""
-                        SELECT column_name FROM information_schema.columns 
+                        SELECT column_name FROM information_schema.columns
                         WHERE table_name = 'signal_history' AND column_name = '{col_name}'
                     """))
                     if not result.scalar():
@@ -65,10 +64,21 @@ async def init_db():
                             await conn.execute(text("""
                                 ALTER TABLE signal_history ADD COLUMN regime_data TEXT
                             """))
-                
-                # Update version
                 await conn.execute(text("UPDATE schema_version SET version = 1 WHERE id = 1"))
                 print("Migration v1 applied: added whale_long and regime_data")
+
+            # Migration v2: add regime_score
+            if current_version < 2:
+                result = await conn.execute(text("""
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_name = 'signal_history' AND column_name = 'regime_score'
+                """))
+                if not result.scalar():
+                    await conn.execute(text("""
+                        ALTER TABLE signal_history ADD COLUMN regime_score FLOAT
+                    """))
+                await conn.execute(text("UPDATE schema_version SET version = 2 WHERE id = 1"))
+                print("Migration v2 applied: added regime_score")
 
 async def get_db():
     async with AsyncSessionLocal() as session:
