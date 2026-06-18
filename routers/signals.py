@@ -6,8 +6,60 @@ from models import WSIHistory, Wallet
 from services.calculations import WSICalculator
 from datetime import datetime
 import httpx
+import asyncio
 
 router = APIRouter()
+
+# Rate limiter: max 5 concurrent Hyperliquid API calls
+HL_SEMAPHORE = asyncio.Semaphore(5)
+
+async def fetch_wallet_state(client: httpx.AsyncClient, wallet: Wallet):
+    """Fetch a single wallet's clearinghouse state with semaphore."""
+    async with HL_SEMAPHORE:
+        resp = await client.post(
+            "https://api.hyperliquid.xyz/info",
+            json={"type": "clearinghouseState", "user": wallet.address},
+            timeout=20
+        )
+        data = resp.json()
+        data["wallet_address"] = wallet.address
+        return data
+
+async def fetch_meta_and_prices(client: httpx.AsyncClient):
+    """Fetch meta + asset contexts once, return price map."""
+    resp = await client.post(
+        "https://api.hyperliquid.xyz/info",
+        json={"type": "metaAndAssetCtxs"},
+        timeout=15
+    )
+    data = resp.json()
+    price_map = {}
+    avg_funding = 0.0
+    btc_price = 0.0
+    if len(data) >= 2:
+        for i, asset in enumerate(data[0].get("universe", [])):
+            try:
+                coin = asset["name"]
+                mark_px = float(data[1][i].get("markPx", 0))
+                funding = float(data[1][i].get("funding", 0))
+                price_map[coin] = mark_px
+                if coin == "BTC":
+                    avg_funding = funding
+                    btc_price = mark_px
+            except Exception:
+                pass
+    return price_map, avg_funding, btc_price
+
+def format_whale_value(db_value: float | None) -> bool | None:
+    """
+    Convert DB float to frontend-friendly value.
+    NULL → None (pre-migration, unknown)
+    1.0 → True (confirmed)
+    0.0 → False (confirmed)
+    """
+    if db_value is None:
+        return None
+    return bool(db_value)
 
 async def calculate_signal(db: AsyncSession):
     # 1. WSI
@@ -21,21 +73,20 @@ async def calculate_signal(db: AsyncSession):
 
     wsi = latest_wsi.wsi_value if latest_wsi else 0
 
-    # 2. Funding Rate (BTC)
-    avg_funding = 0
-    btc_price = 0
-    async with httpx.AsyncClient(timeout=15) as client:
-        try:
-            resp = await client.post("https://api.hyperliquid.xyz/info", json={"type": "metaAndAssetCtxs"})
-            data = resp.json()
-            if len(data) >= 2:
-                for i, asset in enumerate(data[0].get("universe", [])):
-                    if asset["name"] == "BTC":
-                        avg_funding = float(data[1][i].get("funding", 0))
-                        btc_price = float(data[1][i].get("markPx", 0))
-                        break
-        except:
-            pass
+    # 2. Fetch meta + all wallet states in parallel (rate-limited)
+    async with httpx.AsyncClient(timeout=20) as client:
+        # Fetch meta once
+        price_map, avg_funding, btc_price = await fetch_meta_and_prices(client)
+        
+        # Fetch all wallets concurrently with semaphore
+        wallet_tasks = [fetch_wallet_state(client, w) for w in wallets]
+        all_wallet_states = await asyncio.gather(*wallet_tasks, return_exceptions=True)
+        
+        # Filter out exceptions
+        all_wallet_states = [
+            ws for ws in all_wallet_states 
+            if not isinstance(ws, Exception)
+        ]
 
     # 3. Whale Direction with Delta
     whale_closing_short = False
@@ -48,53 +99,38 @@ async def calculate_signal(db: AsyncSession):
         "has_history": False
     }
 
-    async with httpx.AsyncClient(timeout=20) as client:
-        try:
-            total_long = 0
-            total_short = 0
-            meta_resp = await client.post("https://api.hyperliquid.xyz/info", json={"type": "metaAndAssetCtxs"})
-            meta_data = meta_resp.json()
-            price_map = {}
-            if len(meta_data) >= 2:
-                for i, asset in enumerate(meta_data[0].get("universe", [])):
-                    try:
-                        price_map[asset["name"]] = float(meta_data[1][i]["markPx"])
-                    except:
-                        pass
+    try:
+        total_long = 0
+        total_short = 0
 
-            all_wallet_states = []
-            for wallet in wallets:
-                resp = await client.post("https://api.hyperliquid.xyz/info", json={"type": "clearinghouseState", "user": wallet.address})
-                data = resp.json()
-                data["wallet_address"] = wallet.address
-                all_wallet_states.append(data)
-                for ap in data.get("assetPositions", []):
-                    pos = ap.get("position", {})
-                    szi = float(pos.get("szi", 0))
-                    coin = pos.get("coin", "")
-                    mark_px = price_map.get(coin, 0)
-                    if mark_px == 0 or szi == 0:
-                        continue
-                    notional = abs(szi) * mark_px
-                    if szi > 0:
-                        total_long += notional
-                    else:
-                        total_short += notional
+        for data in all_wallet_states:
+            for ap in data.get("assetPositions", []):
+                pos = ap.get("position", {})
+                szi = float(pos.get("szi", 0))
+                coin = pos.get("coin", "")
+                mark_px = price_map.get(coin, 0)
+                if mark_px == 0 or szi == 0:
+                    continue
+                notional = abs(szi) * mark_px
+                if szi > 0:
+                    total_long += notional
+                else:
+                    total_short += notional
 
-            total = total_long + total_short
-            if total > 0:
-                whale_heavy_short = total_short / total > 0.65
-                whale_heavy_long = total_long / total > 0.65
+        total = total_long + total_short
+        if total > 0:
+            whale_heavy_short = total_short / total > 0.65
+            whale_heavy_long = total_long / total > 0.65
 
-            # Calculate delta
-            calc = WSICalculator()
-            delta = await calc.calculate_whale_delta(db, all_wallet_states, price_map)
-            whale_delta_info = delta
-            whale_closing_short = delta.get("closing_short", False)
-            whale_closing_long = delta.get("closing_long", False)
+        # Calculate delta
+        calc = WSICalculator()
+        delta = await calc.calculate_whale_delta(db, all_wallet_states, price_map)
+        whale_delta_info = delta
+        whale_closing_short = delta.get("closing_short", False)
+        whale_closing_long = delta.get("closing_long", False)
 
-        except:
-            pass
+    except Exception:
+        pass
 
     # Signal Logic
     buy_conditions = [
@@ -156,6 +192,7 @@ async def save_signal(db: AsyncSession = Depends(get_db)):
     confidence = max(result["buy_conditions_met"], result["sell_conditions_met"]) / 3 * 100
 
     # FIX: Save both whale_closing_short AND whale_closing_long
+    # NULL if condition not met (pre-migration or unknown)
     db.add(SignalHistory(
         signal=result["signal"],
         btc_price=result["btc_price"],
@@ -173,7 +210,6 @@ async def save_signal(db: AsyncSession = Depends(get_db)):
 @router.get("/signals/history")
 async def get_signal_history(db: AsyncSession = Depends(get_db)):
     from models import SignalHistory
-    from sqlalchemy import desc
     rows = (await db.execute(
         select(SignalHistory).order_by(desc(SignalHistory.timestamp)).limit(50)
     )).scalars().all()
@@ -185,8 +221,8 @@ async def get_signal_history(db: AsyncSession = Depends(get_db)):
             "btc_price": r.btc_price,
             "wsi": r.wsi,
             "funding": r.funding,
-            "whale_short": r.whale_short,
-            "whale_long": r.whale_long,
+            "whale_short": format_whale_value(r.whale_short),
+            "whale_long": format_whale_value(r.whale_long),
             "buy_conditions_met": r.buy_conditions_met,
             "sell_conditions_met": r.sell_conditions_met,
             "confidence": r.confidence
