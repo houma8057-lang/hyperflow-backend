@@ -322,43 +322,9 @@ class WhaleRegimeDetector:
     
     async def _calc_funding_divergence(self, current_wsi: float, funding_rate: float, 
                                       whale_states: list, price_map: dict):
-        """Dimension 4: Whales vs Crowd - MULTI-ASSET (BTC/ETH/SOL)"""
+        """Dimension 4: Whales vs Crowd, BTC funding only (deliberate - BTC leads major cycle reversals, alts follow)"""
         try:
-            # NEW: Calculate weighted average funding across BTC/ETH/SOL
-            # based on whale exposure to each asset
-            asset_funding = {}
-            asset_exposure = {"BTC": 0, "ETH": 0, "SOL": 0}
-            
-            # Get funding rates for all assets
-            # For now, use provided funding_rate as BTC, estimate others
-            # In production, this should fetch all funding rates from API
-            asset_funding["BTC"] = funding_rate
-            
-            # Estimate ETH/SOL funding (in production, fetch real data)
-            # Using BTC as proxy with small adjustment
-            asset_funding["ETH"] = funding_rate * 0.9  # Slight adjustment
-            asset_funding["SOL"] = funding_rate * 1.1  # Slight adjustment
-            
-            # Calculate whale exposure per asset
-            for state in whale_states:
-                for ap in state.get("assetPositions", []):
-                    pos = ap.get("position", {})
-                    coin = pos.get("coin", "")
-                    szi = float(pos.get("szi", 0))
-                    if coin in asset_exposure and szi != 0:
-                        mark_px = price_map.get(coin, 0)
-                        asset_exposure[coin] += abs(szi) * mark_px
-            
-            total_exposure = sum(asset_exposure.values())
-            
-            if total_exposure > 0:
-                # Weighted average funding
-                weighted_funding = sum(
-                    asset_funding.get(coin, funding_rate) * (exposure / total_exposure)
-                    for coin, exposure in asset_exposure.items()
-                )
-            else:
-                weighted_funding = funding_rate
+            weighted_funding = funding_rate
             
             # Determine directions
             whale_direction = "short" if current_wsi < -0.2 else "long" if current_wsi > 0.2 else "neutral"
@@ -386,8 +352,8 @@ class WhaleRegimeDetector:
                 "crowd_direction": crowd_direction,
                 "btc_funding": round(funding_rate * 100, 4),
                 "weighted_funding": round(weighted_funding * 100, 4),
-                "assets_used": list(asset_exposure.keys()),
-                "note": "Multi-asset beta: ETH/SOL estimated from BTC"
+                "assets_used": ["BTC"],
+                "note": "BTC funding only - deliberate design choice, BTC leads major cycle reversals"
             }
         except Exception as e:
             self.dimensions["funding_divergence"] = {
