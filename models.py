@@ -14,7 +14,6 @@ class Wallet(Base):
     id = Column(Integer, primary_key=True, index=True)
     address = Column(String, unique=True, nullable=False)
     label = Column(String, nullable=False, default="")
-    added_at = Column(DateTime(timezone=True), server_default=func.now())
 
 class PositionSnapshot(Base):
     __tablename__ = "positions_snapshot"
