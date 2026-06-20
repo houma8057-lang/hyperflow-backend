@@ -22,11 +22,16 @@ app.include_router(settings.router, prefix="/api")
 app.include_router(signals.router, prefix="/api")
 app.include_router(regime.router, prefix="/api")
 
+
 @app.on_event("startup")
 async def startup():
+    print("STARTUP: calling init_db...")
     await init_db()
+    print("STARTUP: init_db done, calling start_scheduler...")
     start_scheduler()
+    print("STARTUP: scheduler started successfully")
     start_keepalive()
+    print("STARTUP: keepalive started, all startup tasks complete")
 
 @app.get("/")
 def root():
