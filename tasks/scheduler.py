@@ -79,8 +79,8 @@ async def oi_snapshot_job():
                             except:
                                 pass
             await db.commit()
-        except:
-            pass
+        except Exception as e:
+            print(f"oi_snapshot_job error: {e}")
 
 async def signal_save_job():
     async with AsyncSessionLocal() as db:
@@ -96,14 +96,16 @@ async def signal_save_job():
                 btc_price=result["btc_price"],
                 wsi=result["conditions"]["wsi"],
                 funding=result["conditions"]["funding"],
-                whale_short=1.0 if result["conditions"]["whale_short"] else 0.0,
+                whale_short=1.0 if result["conditions"]["whale_closing_short"] else 0.0,
+                whale_long=1.0 if result["conditions"]["whale_closing_long"] else 0.0,
+                regime_score=result.get("regime_score"),
                 buy_conditions_met=result["buy_conditions_met"],
                 sell_conditions_met=result["sell_conditions_met"],
                 confidence=round(confidence, 1)
             ))
             await db.commit()
-        except:
-            pass
+        except Exception as e:
+            print(f"signal_save_job error: {e}")
 
 def start_scheduler():
     scheduler.add_job(snapshot_job, "interval", minutes=5)
