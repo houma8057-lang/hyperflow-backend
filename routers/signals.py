@@ -225,7 +225,7 @@ async def get_signal_history(db: AsyncSession = Depends(get_db)):
     return {"history": [
         {
             "id": r.id,
-            "timestamp": r.timestamp.isoformat(),
+            "timestamp": r.timestamp.isoformat() if r.timestamp else None,
             "signal": r.signal,
             "btc_price": r.btc_price,
             "wsi": r.wsi,
