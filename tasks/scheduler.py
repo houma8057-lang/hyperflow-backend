@@ -12,6 +12,7 @@ import httpx
 scheduler = AsyncIOScheduler()
 
 async def snapshot_job():
+    print(f"snapshot_job: TICK at top of function")
     async with AsyncSessionLocal() as db:
         wallets = (await db.execute(select(Wallet))).scalars().all()
         if not wallets:
@@ -83,6 +84,7 @@ async def oi_snapshot_job():
             print(f"oi_snapshot_job error: {e}")
 
 async def signal_save_job():
+    print(f"signal_save_job: TICK at top of function")
     async with AsyncSessionLocal() as db:
         try:
             from routers.signals import calculate_signal
