@@ -107,6 +107,7 @@ async def signal_save_job():
                 confidence=round(confidence, 1)
             ))
             await db.commit()
+            print(f"signal_save_job: SUCCESS, committed signal {result['signal']} id={result.get('id', 'unknown')}")
         except Exception as e:
             print(f"signal_save_job error: {e}")
 
