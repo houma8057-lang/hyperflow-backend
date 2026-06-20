@@ -8,6 +8,9 @@ class WSIHistory(Base):
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
     wsi_value = Column(Float, nullable=False)
     wallet_count = Column(Integer, nullable=True)
+    total_long_ntl = Column(Float, nullable=True)
+    total_short_ntl = Column(Float, nullable=True)
+    reversal_score = Column(Float, nullable=True)
 
 class Wallet(Base):
     __tablename__ = "wallets"
