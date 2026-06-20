@@ -5,7 +5,7 @@ from services.hyperliquid import get_clearinghouse_state, get_meta_and_asset_ctx
 from services.defillama import get_dry_powder
 from services.calculations import WSICalculator
 from sqlalchemy import select, desc
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import asyncio
 import httpx
 
@@ -95,6 +95,7 @@ async def signal_save_job():
                 return
             confidence = max(result["buy_conditions_met"], result["sell_conditions_met"]) / 3 * 100
             db.add(SignalHistory(
+                timestamp=datetime.now(timezone.utc),
                 signal=result["signal"],
                 btc_price=result["btc_price"],
                 wsi=result["conditions"]["wsi"],

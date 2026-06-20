@@ -5,7 +5,7 @@ from database import get_db
 from models import WSIHistory, Wallet
 from services.calculations import WSICalculator
 from services.regime import WhaleRegimeDetector
-from datetime import datetime
+from datetime import datetime, timezone
 import httpx
 import asyncio
 
@@ -202,6 +202,7 @@ async def save_signal(db: AsyncSession = Depends(get_db)):
     confidence = max(result["buy_conditions_met"], result["sell_conditions_met"]) / 3 * 100
 
     db.add(SignalHistory(
+        timestamp=datetime.now(timezone.utc),
         signal=result["signal"],
         btc_price=result["btc_price"],
         wsi=result["conditions"]["wsi"],
