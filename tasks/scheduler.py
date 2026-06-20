@@ -90,6 +90,7 @@ async def signal_save_job():
             from routers.signals import calculate_signal
             from models import SignalHistory
             result = await calculate_signal(db)
+            print(f"signal_save_job: calculate_signal returned: {result}")
             if not result:
                 return
             confidence = max(result["buy_conditions_met"], result["sell_conditions_met"]) / 3 * 100
