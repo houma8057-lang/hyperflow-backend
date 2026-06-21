@@ -45,12 +45,12 @@ async def snapshot_job():
         calc = WSICalculator()
         result = calc.calculate(states, meta_ctxs)
         ago24 = datetime.utcnow() - timedelta(hours=24)
-        old = (await db.execute(select(WSIHistory).where(WSIHistory.timestamp <= ago24).order_by(desc(WSIHistory.timestamp)).limit(1))).scalar_one_or_none()
+        old = (await db.execute(select(WSIHistory).where(WSIHistory.timestamp.isnot(None)).where(WSIHistory.timestamp <= ago24).order_by(desc(WSIHistory.timestamp)).limit(1))).scalar_one_or_none()
         delta_wsi = result["wsi"] - old.wsi_value if old else 0.0
         dp = await get_dry_powder()
         dry = dp.get("dry_powder_pct", 0) / 100
         reversal = round(0.5 * delta_wsi + 0.2 * dry, 3)
-        entry = WSIHistory(wsi_value=result["wsi"], total_long_ntl=result["total_long_ntl"], total_short_ntl=result["total_short_ntl"], wallet_count=len(wallets), reversal_score=reversal)
+        entry = WSIHistory(timestamp=datetime.now(timezone.utc), wsi_value=result["wsi"], total_long_ntl=result["total_long_ntl"], total_short_ntl=result["total_short_ntl"], wallet_count=len(wallets), reversal_score=reversal)
         db.add(entry)
         settings = (await db.execute(select(SystemSettings).where(SystemSettings.id == 1))).scalar_one_or_none()
         threshold = settings.alert_threshold if settings else 0.60

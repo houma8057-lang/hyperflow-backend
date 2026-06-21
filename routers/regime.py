@@ -17,7 +17,7 @@ async def get_regime_data(db: AsyncSession):
 
     # Get latest WSI
     latest_wsi = (await db.execute(
-        select(WSIHistory).order_by(desc(WSIHistory.timestamp)).limit(1)
+        select(WSIHistory).order_by(desc(WSIHistory.id)).limit(1)
     )).scalar_one_or_none()
     wsi = latest_wsi.wsi_value if latest_wsi else 0
 

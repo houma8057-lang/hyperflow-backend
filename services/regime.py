@@ -100,7 +100,7 @@ class WhaleRegimeDetector:
             rows = await self.db.execute(
                 select(WSIHistory)
                 .where(WSIHistory.timestamp >= cutoff)
-                .order_by(WSIHistory.timestamp)
+                .order_by(WSIHistory.id)
             )
             history = list(rows.scalars().all())
             
@@ -224,7 +224,7 @@ class WhaleRegimeDetector:
             
             # Get WSI direction for powder interpretation
             wsi_row = await self.db.execute(
-                select(WSIHistory).order_by(desc(WSIHistory.timestamp)).limit(1)
+                select(WSIHistory).order_by(desc(WSIHistory.id)).limit(1)
             )
             latest_wsi = wsi_row.scalar_one_or_none()
             wsi_direction = latest_wsi.wsi_value if latest_wsi else 0
@@ -256,7 +256,7 @@ class WhaleRegimeDetector:
         try:
             rows = await self.db.execute(
                 select(WSIHistory)
-                .order_by(desc(WSIHistory.timestamp))
+                .order_by(desc(WSIHistory.id))
                 .limit(10)
             )
             history = list(rows.scalars().all())

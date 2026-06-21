@@ -69,7 +69,7 @@ async def calculate_signal(db: AsyncSession):
         return None
 
     latest_wsi = (await db.execute(
-        select(WSIHistory).order_by(desc(WSIHistory.timestamp)).limit(1)
+        select(WSIHistory).order_by(desc(WSIHistory.id)).limit(1)
     )).scalar_one_or_none()
 
     wsi = latest_wsi.wsi_value if latest_wsi else 0
@@ -221,7 +221,7 @@ async def save_signal(db: AsyncSession = Depends(get_db)):
 async def get_signal_history(db: AsyncSession = Depends(get_db)):
     from models import SignalHistory
     rows = (await db.execute(
-        select(SignalHistory).order_by(desc(SignalHistory.timestamp)).limit(50)
+        select(SignalHistory).order_by(desc(SignalHistory.id)).limit(50)
     )).scalars().all()
     return {"history": [
         {
