@@ -182,14 +182,15 @@ async def calculate_signal(db: AsyncSession):
             "whale_delta": whale_delta_info
         },
         "buy_conditions_met": buy_count,
-        "sell_conditions_met": sell_count
+        "sell_conditions_met": sell_count,
+        "confidence": round(max(buy_count, sell_count) / 3 * 100, 1)
     }
 
 @router.get("/signals/current")
 async def get_current_signal(db: AsyncSession = Depends(get_db)):
     result = await calculate_signal(db)
     if not result:
-        return {"signal": "NEUTRAL", "btc_price": 0, "regime_score": None, "conditions": {}, "buy_conditions_met": 0, "sell_conditions_met": 0}
+        return {"signal": "NEUTRAL", "btc_price": 0, "regime_score": None, "conditions": {}, "buy_conditions_met": 0, "sell_conditions_met": 0, "confidence": 0}
     return result
 
 @router.post("/signals/save")
