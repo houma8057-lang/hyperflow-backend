@@ -195,17 +195,16 @@ async def get_reversal_score(db: AsyncSession = Depends(get_db)):
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post("https://api.hyperliquid.xyz/info", json={"type": "metaAndAssetCtxs"})
             data = resp.json()
-            funding_rates = []
+            btc_funding = 0
             if len(data) >= 2:
                 for i, asset in enumerate(data[0].get("universe", [])):
-                    if asset["name"] in ["BTC", "ETH", "SOL"]:
+                    if asset["name"] == "BTC":
                         try:
-                            funding_rates.append(float(data[1][i].get("funding", 0)))
+                            btc_funding = float(data[1][i].get("funding", 0))
                         except:
                             pass
-                        pass
-                avg_funding = sum(funding_rates) / len(funding_rates) if funding_rates else 0
-            funding_score = avg_funding * 100000
+                        break
+            funding_score = btc_funding * 100000
 
         # 3. Leverage
         wallets = (await db.execute(select(Wallet))).scalars().all()
@@ -232,7 +231,7 @@ async def get_reversal_score(db: AsyncSession = Depends(get_db)):
             "components": {
                 "wsi": round(wsi, 3),
                 "wsi_score": round(wsi_score, 1),
-                "avg_funding": round(avg_funding * 100, 4),
+                "btc_funding": round(btc_funding * 100, 4),
                 "funding_score": round(funding_score, 1),
                 "avg_leverage": round(avg_leverage, 1),
                 "leverage_score": round(leverage_score, 1)
