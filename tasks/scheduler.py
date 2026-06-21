@@ -14,50 +14,54 @@ scheduler = AsyncIOScheduler()
 async def snapshot_job():
     print(f"snapshot_job: TICK at top of function")
     async with AsyncSessionLocal() as db:
-        wallets = (await db.execute(select(Wallet))).scalars().all()
-        if not wallets:
-            return
-        meta_ctxs = await get_meta_and_asset_ctxs()
-        if not meta_ctxs:
-            return
-        states = []
-        for w in wallets:
-            state = await get_clearinghouse_state(w.address)
-            if state:
-                states.append(state)
-                for ap in state.get("assetPositions", []):
-                    pos = ap.get("position", {})
-                    szi = float(pos.get("szi", 0))
-                    if szi == 0:
-                        continue
-                    snap = PositionSnapshot(
-                        wallet_address=w.address,
-                        coin=pos.get("coin", ""),
-                        side="LONG" if szi > 0 else "SHORT",
-                        szi=szi,
-                        entry_px=float(pos.get("entryPx", 0)),
-                        notional=float(pos.get("positionValue", 0)),
-                        unrealized_pnl=float(pos.get("unrealizedPnl", 0)),
-                        leverage=float(pos.get("leverage", {}).get("value", 1))
-                    )
-                    db.add(snap)
-            await asyncio.sleep(0.2)
-        calc = WSICalculator()
-        result = calc.calculate(states, meta_ctxs)
-        ago24 = datetime.utcnow() - timedelta(hours=24)
-        old = (await db.execute(select(WSIHistory).where(WSIHistory.timestamp.isnot(None)).where(WSIHistory.timestamp <= ago24).order_by(desc(WSIHistory.timestamp)).limit(1))).scalar_one_or_none()
-        delta_wsi = result["wsi"] - old.wsi_value if old else 0.0
-        dp = await get_dry_powder()
-        dry = dp.get("dry_powder_pct", 0) / 100
-        reversal = round(0.5 * delta_wsi + 0.2 * dry, 3)
-        entry = WSIHistory(timestamp=datetime.now(timezone.utc), wsi_value=result["wsi"], total_long_ntl=result["total_long_ntl"], total_short_ntl=result["total_short_ntl"], wallet_count=len(wallets), reversal_score=reversal)
-        db.add(entry)
-        settings = (await db.execute(select(SystemSettings).where(SystemSettings.id == 1))).scalar_one_or_none()
-        threshold = settings.alert_threshold if settings else 0.60
-        if abs(reversal) > threshold:
-            alert = Alert(reversal_score=reversal, signal_type="BOTTOM" if reversal > 0 else "TOP", wsi_at_trigger=result["wsi"], delta_wsi_24h=delta_wsi, oi_divergence=0.0, dry_powder=dry)
-            db.add(alert)
-        await db.commit()
+        try:
+            wallets = (await db.execute(select(Wallet))).scalars().all()
+            if not wallets:
+                return
+            meta_ctxs = await get_meta_and_asset_ctxs()
+            if not meta_ctxs:
+                return
+            states = []
+            for w in wallets:
+                state = await get_clearinghouse_state(w.address)
+                if state:
+                    states.append(state)
+                    for ap in state.get("assetPositions", []):
+                        pos = ap.get("position", {})
+                        szi = float(pos.get("szi", 0))
+                        if szi == 0:
+                            continue
+                        snap = PositionSnapshot(
+                            wallet_address=w.address,
+                            coin=pos.get("coin", ""),
+                            side="LONG" if szi > 0 else "SHORT",
+                            szi=szi,
+                            entry_px=float(pos.get("entryPx", 0)),
+                            notional=float(pos.get("positionValue", 0)),
+                            unrealized_pnl=float(pos.get("unrealizedPnl", 0)),
+                            leverage=float(pos.get("leverage", {}).get("value", 1))
+                        )
+                        db.add(snap)
+                await asyncio.sleep(0.2)
+            calc = WSICalculator()
+            result = calc.calculate(states, meta_ctxs)
+            ago24 = datetime.utcnow() - timedelta(hours=24)
+            old = (await db.execute(select(WSIHistory).where(WSIHistory.timestamp.isnot(None)).where(WSIHistory.timestamp <= ago24).order_by(desc(WSIHistory.timestamp)).limit(1))).scalar_one_or_none()
+            delta_wsi = result["wsi"] - old.wsi_value if old else 0.0
+            dp = await get_dry_powder()
+            dry = dp.get("dry_powder_pct", 0) / 100
+            reversal = round(0.5 * delta_wsi + 0.2 * dry, 3)
+            entry = WSIHistory(timestamp=datetime.now(timezone.utc), wsi_value=result["wsi"], total_long_ntl=result["total_long_ntl"], total_short_ntl=result["total_short_ntl"], wallet_count=len(wallets), reversal_score=reversal)
+            db.add(entry)
+            settings = (await db.execute(select(SystemSettings).where(SystemSettings.id == 1))).scalar_one_or_none()
+            threshold = settings.alert_threshold if settings else 0.60
+            if abs(reversal) > threshold:
+                alert = Alert(reversal_score=reversal, signal_type="BOTTOM" if reversal > 0 else "TOP", wsi_at_trigger=result["wsi"], delta_wsi_24h=delta_wsi, oi_divergence=0.0, dry_powder=dry)
+                db.add(alert)
+            await db.commit()
+            print(f"snapshot_job: SUCCESS, saved WSI={result['wsi']}")
+        except Exception as e:
+            print(f"snapshot_job error: {e}")
 
 async def oi_snapshot_job():
     async with AsyncSessionLocal() as db:
