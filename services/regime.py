@@ -222,19 +222,11 @@ class WhaleRegimeDetector:
             utilization = total_position_notional / total_equity
             dry_powder_ratio = max(0, 1 - min(utilization, 10) / 10)  # Cap at 10x for sanity
             
-            # Get WSI direction for powder interpretation
-            wsi_row = await self.db.execute(
-                select(WSIHistory).order_by(desc(WSIHistory.id)).limit(1)
-            )
-            latest_wsi = wsi_row.scalar_one_or_none()
-            wsi_direction = latest_wsi.wsi_value if latest_wsi else 0
-            
-            if wsi_direction < -0.3:
-                value = -dry_powder_ratio
-            elif wsi_direction > 0.3:
-                value = dry_powder_ratio
-            else:
-                value = 0
+            # Fix audit #4: dry powder is directionally neutral.
+            # Removed WSI-direction gate to keep this dimension independent.
+            # High powder = whales have capacity to act = amplifies any signal.
+            # Composite scoring already combines all dimensions together.
+            value = dry_powder_ratio
             
             self.dimensions["wallet_dry_powder"] = {
                 "active": True,
