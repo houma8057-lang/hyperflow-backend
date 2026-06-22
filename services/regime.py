@@ -363,27 +363,29 @@ class WhaleRegimeDetector:
             }
     
     def _calc_signal_confidence(self, score: float, active_dims: list) -> int:
-        """Calculate signal confidence based on score magnitude and dimension agreement"""
+        """
+        Signal confidence: agreement is primary driver, magnitude is secondary.
+        Fix audit #3: calm market (low magnitude) no longer looks identical to
+        disagreeing dimensions (low agreement).
+        """
         if not active_dims:
             return 0
-        
-        # Base: how far from zero is the score?
-        magnitude = abs(score)
-        
-        # Bonus: do dimensions agree on direction?
+
         dim_values = [d["value"] for d in active_dims]
         signs = [1 if v > 0 else -1 if v < 0 else 0 for v in dim_values]
         non_zero_signs = [s for s in signs if s != 0]
-        
+
         if len(non_zero_signs) >= 2:
             agreement = abs(sum(non_zero_signs)) / len(non_zero_signs)
+        elif len(non_zero_signs) == 1:
+            agreement = 0.5
         else:
             agreement = 0
-        
-        # Confidence = magnitude * agreement * data_completeness_factor
+
+        magnitude = min(1.0, abs(score) * 2)
         completeness_factor = len(active_dims) / 4
-        confidence = int(magnitude * agreement * completeness_factor * 100)
-        
+        confidence = int(agreement * (0.7 + 0.3 * magnitude) * completeness_factor * 100)
+
         return min(100, max(0, confidence))
     
     def _score_to_regime(self, score: float) -> str:
