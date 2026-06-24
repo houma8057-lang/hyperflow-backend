@@ -189,27 +189,27 @@ class WhaleRegimeDetector:
                         wallet_notional += abs(szi) * mark_px
                 
                 # Per-wallet utilization
-                wallet_util = wallet_notional / equity if equity > 0 else float('inf')
+                wallet_util_raw = wallet_notional / equity if equity > 0 else float("inf")
                 
                 wallet_details.append({
                     "address": wallet_addr[:8] + "...",
                     "equity": round(equity, 2),
                     "notional": round(wallet_notional, 2),
-                    "utilization": round(wallet_util, 3) if wallet_util != float('inf') else 999
+                    "utilization": round(wallet_util_raw, 3) if wallet_util_raw != float("inf") else 999
                 })
                 
                 total_equity += equity
                 total_position_notional += wallet_notional
                 
                 # FLAG: tiered warnings by actual severity, not one bucket for everything
-                if wallet_util > 10:
-                    self.warnings.append(f"Wallet {wallet_addr[:8]}... utilization={wallet_util:.1f}x - possible data error")
-                elif wallet_util > 8:
-                    self.warnings.append(f"Wallet {wallet_addr[:8]}... utilization={wallet_util:.1f}x - very high leverage")
-                elif wallet_util > 4:
-                    self.warnings.append(f"Wallet {wallet_addr[:8]}... utilization={wallet_util:.1f}x - high leverage")
-                elif wallet_util > 1:
-                    self.warnings.append(f"Wallet {wallet_addr[:8]}... utilization={wallet_util:.1f}x - moderate leverage")
+                if wallet_util_raw > 10:
+                    self.warnings.append(f"Wallet {wallet_addr[:8]}... utilization={wallet_util_raw:.1f}x - possible data error")
+                elif wallet_util_raw > 8:
+                    self.warnings.append(f"Wallet {wallet_addr[:8]}... utilization={wallet_util_raw:.1f}x - very high leverage")
+                elif wallet_util_raw > 4:
+                    self.warnings.append(f"Wallet {wallet_addr[:8]}... utilization={wallet_util_raw:.1f}x - high leverage")
+                elif wallet_util_raw > 1:
+                    self.warnings.append(f"Wallet {wallet_addr[:8]}... utilization={wallet_util_raw:.1f}x - moderate leverage")
             
             if total_equity <= 0:
                 self.dimensions["wallet_dry_powder"] = {
