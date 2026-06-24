@@ -261,23 +261,16 @@ class WhaleRegimeDetector:
                 }
                 return
             
-            # NEW: Check for wallet count changes (roster changes)
-            wallet_counts = [h.wallet_count for h in history if hasattr(h, 'wallet_count') and h.wallet_count]
-            if len(set(wallet_counts)) > 1:
-                self.warnings.append(f"Wallet roster changed ({min(wallet_counts)} → {max(wallet_counts)} wallets) - velocity may be artificial")
-            
-            # Filter to snapshots with same wallet count as current
-            current_wallet_count = wallet_counts[0] if wallet_counts else None
-            stable_history = [h for h in history if hasattr(h, 'wallet_count') and h.wallet_count == current_wallet_count]
-            
-            if len(stable_history) < 2:
-                self.dimensions["velocity"] = {
-                    "active": False,
-                    "value": 0,
-                    "label": "Roster change detected - velocity unreliable"
-                }
+            # Fix audit #6: distinguish legacy null from actual roster change
+            history_with_count = [h for h in history if h.wallet_count is not None]
+            if len(history_with_count) < 2:
+                self.dimensions["velocity"] = {"active": False, "value": 0, "label": "Insufficient data (legacy rows)"}
                 return
-            
+            wallet_counts = [h.wallet_count for h in history_with_count]
+            current_wallet_count = wallet_counts[0]
+            if len(set(wallet_counts)) > 1:
+                self.warnings.append(f"Wallet roster changed - velocity may be artificial")
+            stable_history = [h for h in history_with_count if h.wallet_count == current_wallet_count]
             # Calculate smoothed velocity from stable snapshots
             changes = []
             for i in range(len(stable_history) - 1):
