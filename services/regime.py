@@ -395,9 +395,9 @@ class WhaleRegimeDetector:
         funding = dimensions.get("funding_divergence", {})
         velocity = dimensions.get("velocity", {})
         
-        # Low confidence near-neutral = always wait
-        if abs(dimensions.get("funding_divergence", {}).get("value", 0)) < 0.3 and confidence < 30:
-            return "NEUTRAL — Low confidence, wait for clearer signal"
+        # Fix audit #7: use composite signal_confidence and score, not just funding_divergence alone
+        if confidence < 30 and abs(dimensions.get("funding_divergence", {}).get("value", 0)) < 0.3:
+            return f"NEUTRAL — Low confidence ({confidence}% signal confidence), wait for clearer signal"
         
         if "EXTREME_BULLISH" in regime:
             if funding.get("label") == "Strong Divergence":
