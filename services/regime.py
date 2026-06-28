@@ -21,7 +21,6 @@ class WhaleRegimeDetector:
         self.dimensions = {
             "position_extremity": {"active": False, "value": 0, "label": "Insufficient History"},
             "wallet_dry_powder": {"active": False, "value": 0, "label": "No Data"},
-            "velocity": {"active": False, "value": 0, "label": "No Data"},
             "funding_divergence": {"active": False, "value": 0, "label": "No Data"},
             "mvrv_cycle": {"active": False, "value": 0, "label": "No Data"}
         }
@@ -56,10 +55,9 @@ class WhaleRegimeDetector:
         # Velocity 25%
         # Position Extremity 20%
         weights = {
-            "funding_divergence": 0.20,
-            "wallet_dry_powder": 0.25,
-            "velocity": 0.20,
-            "position_extremity": 0.20,
+            "wallet_dry_powder": 0.30,
+            "position_extremity": 0.30,
+            "funding_divergence": 0.25,
             "mvrv_cycle": 0.15
         }
         
@@ -80,7 +78,7 @@ class WhaleRegimeDetector:
             return self._fallback_signal(current_wsi)
         
         # NEW: Split confidence into two metrics per Claude audit
-        data_completeness = min(100, int(len(active_dims) / 5 * 100))
+        data_completeness = min(100, int(len(active_dims) / 4 * 100))
         signal_confidence = self._calc_signal_confidence(normalized_score, active_dims)
         
         regime = self._score_to_regime(normalized_score)
