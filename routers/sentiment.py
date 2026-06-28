@@ -223,6 +223,7 @@ async def get_reversal_score(db: AsyncSession = Depends(get_db)):
                     )
                     state = resp.json()
                     state["wallet_address"] = wallet.address
+                    state["wallet_label"] = wallet.label
                     current_states.append(state)
                     for ap in state.get("assetPositions", []):
                         pos = ap.get("position", {})

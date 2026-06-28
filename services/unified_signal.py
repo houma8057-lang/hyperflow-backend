@@ -169,7 +169,7 @@ async def detect_whale_flips(
 
         for state in current_states:
             addr = state.get("wallet_address", "")
-            label = state.get("label", addr[:8])
+            label = state.get("wallet_label", state.get("label", addr[:8]))
             prev = prev_sides.get(addr)
             if not prev:
                 continue
