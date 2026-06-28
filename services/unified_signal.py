@@ -137,10 +137,15 @@ async def detect_whale_flips(
     db: AsyncSession,
     current_states: list,
     price_map: dict
-) -> tuple[int, str]:
+) -> dict:
+    """
+    Detect whale direction changes vs 24h ago.
+    Uses percentage threshold (60%) so it scales automatically
+    when new whales are added.
+    """
     try:
         ago24 = datetime.utcnow() - timedelta(hours=24)
-        from models import PositionSnapshot
+        from models import PositionSnapshot, Wallet
         result = await db.execute(
             select(PositionSnapshot)
             .where(PositionSnapshot.timestamp >= ago24)
@@ -148,17 +153,23 @@ async def detect_whale_flips(
         )
         snapshots = result.scalars().all()
 
+        # Get total whale count from DB
+        wallets_result = await db.execute(select(Wallet))
+        total_whales = len(wallets_result.scalars().all())
+        threshold_pct = 0.60  # 60% threshold
+
         prev_sides = {}
         for snap in snapshots:
             key = snap.wallet_address
             if key not in prev_sides:
                 prev_sides[key] = snap.side
 
-        bullish_flips = 0
-        bearish_flips = 0
+        bullish_flips = []
+        bearish_flips = []
 
         for state in current_states:
             addr = state.get("wallet_address", "")
+            label = state.get("label", addr[:8])
             prev = prev_sides.get(addr)
             if not prev:
                 continue
@@ -181,20 +192,56 @@ async def detect_whale_flips(
             current_side = "LONG" if long_ntl > short_ntl else "SHORT"
 
             if prev == "SHORT" and current_side == "LONG":
-                bullish_flips += 1
+                bullish_flips.append(label)
             elif prev == "LONG" and current_side == "SHORT":
-                bearish_flips += 1
+                bearish_flips.append(label)
 
-        if bullish_flips > bearish_flips:
-            return bullish_flips, "bullish"
-        elif bearish_flips > bullish_flips:
-            return bearish_flips, "bearish"
+        bullish_count = len(bullish_flips)
+        bearish_count = len(bearish_flips)
+        majority_threshold = max(1, round(total_whales * threshold_pct))
+
+        # Determine direction
+        if bullish_count > bearish_count:
+            flip_count = bullish_count
+            direction = "bullish"
+            flipped_whales = bullish_flips
+        elif bearish_count > bullish_count:
+            flip_count = bearish_count
+            direction = "bearish"
+            flipped_whales = bearish_flips
         else:
-            return 0, "neutral"
+            flip_count = 0
+            direction = "neutral"
+            flipped_whales = []
+
+        # Major alert if >= 60% of whales flipped
+        is_major = flip_count >= majority_threshold
+
+        return {
+            "flip_count": flip_count,
+            "direction": direction,
+            "flipped_whales": flipped_whales,
+            "total_whales": total_whales,
+            "majority_threshold": majority_threshold,
+            "is_major": is_major,
+            "alert_type": (
+                "MAJOR BOTTOM SIGNAL" if is_major and direction == "bullish"
+                else "MAJOR TOP SIGNAL" if is_major and direction == "bearish"
+                else None
+            )
+        }
 
     except Exception as e:
         print(f"whale_flip error: {e}")
-        return 0, "neutral"
+        return {
+            "flip_count": 0,
+            "direction": "neutral",
+            "flipped_whales": [],
+            "total_whales": 0,
+            "majority_threshold": 5,
+            "is_major": False,
+            "alert_type": None
+        }
 
 # ─────────────────────────────────────────
 # Main unified signal calculator
@@ -217,7 +264,9 @@ async def calculate_unified_signal(
         detect_whale_flips(db, current_states, price_map)
     )
 
-    flip_count, flip_dir = flip_result
+    flip_data = flip_result
+    flip_count = flip_data["flip_count"]
+    flip_dir = flip_data["direction"]
 
     # Convert each metric to -100/+100 score
     scores = {
@@ -239,6 +288,15 @@ async def calculate_unified_signal(
     return {
         "score": total,
         "signal": signal,
+        "whale_alert": {
+            "is_major":       flip_data["is_major"],
+            "alert_type":     flip_data["alert_type"],
+            "flip_count":     flip_count,
+            "direction":      flip_dir,
+            "flipped_whales": flip_data["flipped_whales"],
+            "total_whales":   flip_data["total_whales"],
+            "threshold":      flip_data["majority_threshold"],
+        },
         "components": {
             "wsi_score":        round(scores["wsi"] * WEIGHTS["wsi"] / 100, 2),
             "funding_score":    round(scores["funding"] * WEIGHTS["funding"] / 100, 2),
@@ -249,14 +307,14 @@ async def calculate_unified_signal(
             "oi_change_score":  round(scores["oi_change"] * WEIGHTS["oi_change"] / 100, 2),
         },
         "raw": {
-            "wsi":         round(wsi, 3),
-            "funding":     round(funding * 100, 4),
-            "mvrv_z":      round(mvrv_z, 3) if mvrv_z is not None else None,
-            "nupl":        round(nupl, 3) if nupl is not None else None,
-            "sopr":        round(sopr, 3) if sopr is not None else None,
+            "wsi":           round(wsi, 3),
+            "funding":       round(funding * 100, 4),
+            "mvrv_z":        round(mvrv_z, 3) if mvrv_z is not None else None,
+            "nupl":          round(nupl, 3) if nupl is not None else None,
+            "sopr":          round(sopr, 3) if sopr is not None else None,
             "oi_change_pct": oi_change,
-            "whale_flips": flip_count,
-            "flip_dir":    flip_dir,
+            "whale_flips":   flip_count,
+            "flip_dir":      flip_dir,
         },
         "timestamp": datetime.utcnow().isoformat()
     }
