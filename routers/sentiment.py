@@ -186,58 +186,75 @@ async def get_market_context():
 @router.get("/sentiment/reversal-score")
 async def get_reversal_score(db: AsyncSession = Depends(get_db)):
     try:
-        # 1. WSI
-        wsi_data = await fetch_wsi_live(db)
-        wsi = wsi_data.get("wsi", 0)
-        wsi_score = wsi * 100
+        from services.unified_signal import calculate_unified_signal
 
-        # 2. Funding Rate
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post("https://api.hyperliquid.xyz/info", json={"type": "metaAndAssetCtxs"})
-            data = resp.json()
-            btc_funding = 0
-            if len(data) >= 2:
-                for i, asset in enumerate(data[0].get("universe", [])):
-                    if asset["name"] == "BTC":
-                        try:
-                            btc_funding = float(data[1][i].get("funding", 0))
-                        except:
-                            pass
-                        break
-            funding_score = btc_funding * 100000
-
-        # 3. Leverage
+        # 1. Fetch WSI + wallet states + prices
         wallets = (await db.execute(select(Wallet))).scalars().all()
-        leverage_scores = []
+        if not wallets:
+            return {"score": 0, "signal": "NEUTRAL", "components": {}}
+
         async with httpx.AsyncClient(timeout=30) as client:
+            meta_resp = await client.post(
+                "https://api.hyperliquid.xyz/info",
+                json={"type": "metaAndAssetCtxs"}
+            )
+            meta_data = meta_resp.json()
+            price_map = {}
+            btc_funding = 0.0
+            if len(meta_data) >= 2:
+                for i, asset in enumerate(meta_data[0].get("universe", [])):
+                    try:
+                        name = asset["name"]
+                        ctx = meta_data[1][i]
+                        price_map[name] = float(ctx.get("markPx", 0))
+                        if name == "BTC":
+                            btc_funding = float(ctx.get("funding", 0))
+                    except:
+                        pass
+
+            total_long = 0.0
+            total_short = 0.0
+            current_states = []
             for wallet in wallets:
-                resp = await client.post("https://api.hyperliquid.xyz/info", json={"type": "clearinghouseState", "user": wallet.address})
-                positions = resp.json().get("assetPositions", [])
-                for ap in positions:
-                    lev = float(ap.get("position", {}).get("leverage", {}).get("value", 1))
-                    leverage_scores.append(lev)
-        avg_leverage = sum(leverage_scores) / len(leverage_scores) if leverage_scores else 1
-        leverage_score = min((avg_leverage - 1) / 19 * 100, 100)
+                try:
+                    resp = await client.post(
+                        "https://api.hyperliquid.xyz/info",
+                        json={"type": "clearinghouseState", "user": wallet.address}
+                    )
+                    state = resp.json()
+                    state["wallet_address"] = wallet.address
+                    current_states.append(state)
+                    for ap in state.get("assetPositions", []):
+                        pos = ap.get("position", {})
+                        szi = float(pos.get("szi", 0))
+                        coin = pos.get("coin", "")
+                        px = price_map.get(coin, 0)
+                        if px == 0 or szi == 0:
+                            continue
+                        ntl = abs(szi) * px
+                        if szi > 0:
+                            total_long += ntl
+                        else:
+                            total_short += ntl
+                except:
+                    continue
 
-        # Combined Score (weighted)
-        combined = (wsi_score * 0.4) + (funding_score * 0.3) + (leverage_score * 0.3 * (-1 if wsi < 0 else 1))
-        combined = max(-100, min(100, combined))
+        total = total_long + total_short
+        wsi = round((total_long - total_short) / total, 3) if total > 0 else 0.0
 
-        signal = "STRONG BOTTOM" if combined < -60 else "WEAK BOTTOM" if combined < -30 else "STRONG TOP" if combined > 60 else "WEAK TOP" if combined > 30 else "NEUTRAL"
+        # 2. Calculate unified signal
+        result = await calculate_unified_signal(
+            db=db,
+            wsi=wsi,
+            funding=btc_funding,
+            current_states=current_states,
+            price_map=price_map
+        )
 
-        return {
-            "score": round(combined, 1),
-            "signal": signal,
-            "components": {
-                "wsi": round(wsi, 3),
-                "wsi_score": round(wsi_score, 1),
-                "btc_funding": round(btc_funding * 100, 4),
-                "funding_score": round(funding_score, 1),
-                "avg_leverage": round(avg_leverage, 1),
-                "leverage_score": round(leverage_score, 1)
-            }
-        }
+        return result
+
     except Exception as e:
+        print(f"reversal-score error: {e}")
         return {"score": 0, "signal": "ERROR", "components": {}}
 
 @router.post("/sentiment/oi-snapshot")
