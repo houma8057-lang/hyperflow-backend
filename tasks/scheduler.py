@@ -116,8 +116,33 @@ async def signal_save_job():
         except Exception as e:
             print(f"signal_save_job error: {e}")
 
+
+async def mvrv_snapshot_job():
+    """Fetch and store latest MVRV Z-Score once per day"""
+    from models import MVRVHistory
+    from services.bgeometrics import get_latest_mvrv_zscore
+    async with AsyncSessionLocal() as db:
+        try:
+            zscore = await get_latest_mvrv_zscore()
+            if zscore is None:
+                print("mvrv_snapshot_job: no data returned")
+                return
+            from sqlalchemy import func
+            from datetime import date
+            today = date.today().isoformat()
+            db.add(MVRVHistory(
+                timestamp=datetime.now(timezone.utc),
+                date=today,
+                zscore=zscore
+            ))
+            await db.commit()
+            print(f"mvrv_snapshot_job: saved zscore={zscore} for {today}")
+        except Exception as e:
+            print(f"mvrv_snapshot_job error: {e}")
+
 def start_scheduler():
     scheduler.add_job(snapshot_job, "interval", minutes=5)
     scheduler.add_job(oi_snapshot_job, "interval", hours=1)
     scheduler.add_job(signal_save_job, "interval", minutes=5)
+    scheduler.add_job(mvrv_snapshot_job, "interval", hours=12)
     scheduler.start()

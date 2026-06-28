@@ -77,3 +77,10 @@ class SchemaVersion(Base):
     id = Column(Integer, primary_key=True, index=True)
     version = Column(Integer, nullable=False, default=0)
     applied_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class MVRVHistory(Base):
+    __tablename__ = "mvrv_history"
+    id = Column(Integer, primary_key=True, index=True)
+    timestamp = Column(DateTime(timezone=True), server_default=func.now())
+    date = Column(String, nullable=False)
+    zscore = Column(Float, nullable=False)

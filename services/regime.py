@@ -3,7 +3,7 @@ import math
 from datetime import datetime, timedelta
 from sqlalchemy import select, desc, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
-from models import SignalHistory, WSIHistory, Wallet, OIHistory
+from models import SignalHistory, WSIHistory, Wallet, OIHistory, MVRVHistory
 
 class WhaleRegimeDetector:
     """
@@ -22,7 +22,8 @@ class WhaleRegimeDetector:
             "position_extremity": {"active": False, "value": 0, "label": "Insufficient History"},
             "wallet_dry_powder": {"active": False, "value": 0, "label": "No Data"},
             "velocity": {"active": False, "value": 0, "label": "No Data"},
-            "funding_divergence": {"active": False, "value": 0, "label": "No Data"}
+            "funding_divergence": {"active": False, "value": 0, "label": "No Data"},
+            "mvrv_cycle": {"active": False, "value": 0, "label": "No Data"}
         }
         self.warnings = []
     
@@ -45,6 +46,9 @@ class WhaleRegimeDetector:
         
         # Dimension 4: Funding Divergence (multi-asset, reduced weight)
         await self._calc_funding_divergence(current_wsi, funding_rate, whale_states, price_map)
+
+        # Dimension 5: MVRV Z-Score (on-chain cycle position, hidden from UI)
+        await self._calc_mvrv_cycle()
         
         # Composite scoring - REVISED WEIGHTS per Claude audit
         # Funding reduced from 40% to 25% until true multi-asset
@@ -52,10 +56,11 @@ class WhaleRegimeDetector:
         # Velocity 25%
         # Position Extremity 20%
         weights = {
-            "funding_divergence": 0.25,
-            "wallet_dry_powder": 0.30,
-            "velocity": 0.25,
-            "position_extremity": 0.20
+            "funding_divergence": 0.20,
+            "wallet_dry_powder": 0.25,
+            "velocity": 0.20,
+            "position_extremity": 0.20,
+            "mvrv_cycle": 0.15
         }
         
         active_dims = [d for d in self.dimensions.values() if d["active"]]
@@ -75,7 +80,7 @@ class WhaleRegimeDetector:
             return self._fallback_signal(current_wsi)
         
         # NEW: Split confidence into two metrics per Claude audit
-        data_completeness = min(100, int(len(active_dims) / 4 * 100))
+        data_completeness = min(100, int(len(active_dims) / 5 * 100))
         signal_confidence = self._calc_signal_confidence(normalized_score, active_dims)
         
         regime = self._score_to_regime(normalized_score)
@@ -418,6 +423,41 @@ class WhaleRegimeDetector:
         else:
             return f"NEUTRAL — No clear edge ({confidence}% signal confidence)"
     
+
+    async def _calc_mvrv_cycle(self):
+        """Dimension 5: MVRV Z-Score as on-chain cycle position indicator (hidden from UI)"""
+        try:
+            from services.bgeometrics import get_latest_mvrv_zscore, mvrv_zscore_to_signal
+            zscore = await get_latest_mvrv_zscore()
+            if zscore is None:
+                self.dimensions["mvrv_cycle"] = {
+                    "active": False,
+                    "value": 0,
+                    "label": "No Data"
+                }
+                return
+            signal_value = mvrv_zscore_to_signal(zscore)
+            if zscore < 0:
+                label = "Bottom Zone"
+            elif zscore < 2:
+                label = "Neutral"
+            elif zscore < 4:
+                label = "Warning Zone"
+            else:
+                label = "Top Zone"
+            self.dimensions["mvrv_cycle"] = {
+                "active": True,
+                "value": round(signal_value, 3),
+                "label": label,
+                "zscore": round(zscore, 3)
+            }
+        except Exception as e:
+            self.dimensions["mvrv_cycle"] = {
+                "active": False,
+                "value": 0,
+                "label": f"Error: {str(e)}"
+            }
+
     def _fallback_signal(self, current_wsi: float) -> dict:
         """Fallback when no dimensions are active"""
         return {

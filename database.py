@@ -79,6 +79,26 @@ async def init_db():
                     """))
                 await conn.execute(text("UPDATE schema_version SET version = 2 WHERE id = 1"))
                 print("Migration v2 applied: added regime_score")
+            # Migration v3: add mvrv_history table
+            if current_version < 3:
+                result = await conn.execute(text("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables
+                        WHERE table_name = 'mvrv_history'
+                    )
+                """))
+                if not result.scalar():
+                    await conn.execute(text("""
+                        CREATE TABLE mvrv_history (
+                            id SERIAL PRIMARY KEY,
+                            timestamp TIMESTAMPTZ DEFAULT NOW(),
+                            date VARCHAR NOT NULL,
+                            zscore FLOAT NOT NULL
+                        )
+                    """))
+                await conn.execute(text("UPDATE schema_version SET version = 3 WHERE id = 1"))
+                print("Migration v3 applied: created mvrv_history table")
+
 
 async def get_db():
     async with AsyncSessionLocal() as session:
