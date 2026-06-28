@@ -47,4 +47,28 @@ async def get_positions(db: AsyncSession = Depends(get_db)):
                     })
             except:
                 continue
-    return {"summary": [], "detail": detail}
+    # Build summary per wallet
+    from collections import defaultdict
+    wallet_summary = defaultdict(lambda: {"long": 0.0, "short": 0.0, "label": ""})
+    for p in detail:
+        label = p["label"]
+        wallet_summary[label]["label"] = label
+        if p["side"] == "LONG":
+            wallet_summary[label]["long"] += p["notional"]
+        else:
+            wallet_summary[label]["short"] += p["notional"]
+
+    summary = []
+    for label, v in wallet_summary.items():
+        total = v["long"] + v["short"]
+        dominant = "LONG" if v["long"] > v["short"] else "SHORT"
+        summary.append({
+            "label": label,
+            "dominant_side": dominant,
+            "total_notional": round(total, 2),
+            "long_notional": round(v["long"], 2),
+            "short_notional": round(v["short"], 2)
+        })
+
+    summary.sort(key=lambda x: x["total_notional"], reverse=True)
+    return {"summary": summary, "detail": detail}
