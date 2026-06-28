@@ -67,10 +67,11 @@ class WhaleRegimeDetector:
         
         weighted_score = 0
         total_weight = 0
-        for key, dim in self.dimensions.items():
-            if dim["active"]:
-                weighted_score += dim["value"] * weights[key]
-                total_weight += weights[key]
+        for key, weight in weights.items():
+            dim = self.dimensions.get(key, {})
+            if dim.get("active"):
+                weighted_score += dim["value"] * weight
+                total_weight += weight
         
         if total_weight > 0:
             normalized_score = weighted_score / total_weight
