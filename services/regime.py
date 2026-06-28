@@ -40,8 +40,6 @@ class WhaleRegimeDetector:
         # Dimension 2: Wallet-Specific Dry Powder
         await self._calc_wallet_dry_powder(whale_states, price_map)
         
-        # Dimension 3: Velocity of WSI change (excludes roster changes)
-        await self._calc_velocity(current_wsi)
         
         # Dimension 4: Funding Divergence (multi-asset, reduced weight)
         await self._calc_funding_divergence(current_wsi, funding_rate, whale_states, price_map)
@@ -247,68 +245,7 @@ class WhaleRegimeDetector:
                 "label": f"Error: {str(e)}"
             }
     
-    async def _calc_velocity(self, current_wsi: float):
-        """Dimension 3: Rate of WSI change, EXCLUDING wallet roster changes"""
-        try:
-            rows = await self.db.execute(
-                select(WSIHistory)
-                .order_by(desc(WSIHistory.id))
-                .limit(10)
-            )
-            history = list(rows.scalars().all())
-            
-            if len(history) < 2:
-                self.dimensions["velocity"] = {
-                    "active": False,
-                    "value": 0,
-                    "label": "Need more snapshots"
-                }
-                return
-            
-            # Fix audit #6: distinguish legacy null from actual roster change
-            history_with_count = [h for h in history if h.wallet_count is not None]
-            if len(history_with_count) < 2:
-                self.dimensions["velocity"] = {"active": False, "value": 0, "label": "Insufficient data (legacy rows)"}
-                return
-            wallet_counts = [h.wallet_count for h in history_with_count]
-            current_wallet_count = wallet_counts[0]
-            if len(set(wallet_counts)) > 1:
-                self.warnings.append(f"Wallet roster changed - velocity may be artificial")
-            stable_history = [h for h in history_with_count if h.wallet_count == current_wallet_count]
-            # Calculate smoothed velocity from stable snapshots
-            changes = []
-            for i in range(len(stable_history) - 1):
-                time_diff = (stable_history[i].timestamp - stable_history[i+1].timestamp).total_seconds() / 3600
-                if time_diff > 0:
-                    wsi_change = stable_history[i].wsi_value - stable_history[i+1].wsi_value
-                    changes.append(wsi_change / time_diff)
-            
-            if not changes:
-                self.dimensions["velocity"] = {
-                    "active": False,
-                    "value": 0,
-                    "label": "No time diff"
-                }
-                return
-            
-            avg_velocity = sum(changes) / len(changes)
-            normalized_velocity = max(-1, min(1, avg_velocity / 0.1))
-            
-            self.dimensions["velocity"] = {
-                "active": True,
-                "value": round(normalized_velocity, 3),
-                "label": "Fast Flip" if abs(normalized_velocity) > 0.8 else "Shifting" if abs(normalized_velocity) > 0.3 else "Stable",
-                "velocity_per_hour": round(avg_velocity, 4),
-                "snapshots_used": len(stable_history),
-                "roster_stable": True
-            }
-        except Exception as e:
-            self.dimensions["velocity"] = {
-                "active": False,
-                "value": 0,
-                "label": f"Error: {str(e)}"
-            }
-    
+
     async def _calc_funding_divergence(self, current_wsi: float, funding_rate: float, 
                                       whale_states: list, price_map: dict):
         """Dimension 4: Whales vs Crowd, BTC funding only (deliberate - BTC leads major cycle reversals, alts follow)"""
@@ -397,7 +334,6 @@ class WhaleRegimeDetector:
     def _recommendation(self, regime: str, dimensions: dict, confidence: int) -> str:
         """Generate action recommendation based on regime, dimensions, and confidence"""
         funding = dimensions.get("funding_divergence", {})
-        velocity = dimensions.get("velocity", {})
         
         # Fix audit #7: use composite signal_confidence and score, not just funding_divergence alone
         if confidence < 30 and abs(dimensions.get("funding_divergence", {}).get("value", 0)) < 0.3:
@@ -412,12 +348,8 @@ class WhaleRegimeDetector:
                 return f"STRONG SELL — Whales short against long crowd ({confidence}% signal confidence)"
             return f"SELL — Whale consensus bearish ({confidence}% signal confidence)"
         elif "BULLISH" in regime:
-            if velocity.get("label") == "Fast Flip":
-                return f"WATCH — Rapid shift to bullish, confirm before entry ({confidence}% signal confidence)"
             return f"WEAK BUY — Bullish bias ({confidence}% signal confidence)"
         elif "BEARISH" in regime:
-            if velocity.get("label") == "Fast Flip":
-                return f"WATCH — Rapid shift to bearish, confirm before short ({confidence}% signal confidence)"
             return f"WEAK SELL — Bearish bias ({confidence}% signal confidence)"
         else:
             return f"NEUTRAL — No clear edge ({confidence}% signal confidence)"
