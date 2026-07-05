@@ -14,9 +14,12 @@ async def fetch_wsi_live(db: AsyncSession):
         return {"wsi": 0.0, "long_pct": 0.0, "short_pct": 0.0, "total_ntl": 0.0, "wallet_count": 0}
     async with httpx.AsyncClient(timeout=30) as client:
         meta_resp = await client.post("https://api.hyperliquid.xyz/info", json={"type": "metaAndAssetCtxs"})
-        meta_data = meta_resp.json()
+        try:
+            meta_data = meta_resp.json()
+        except Exception:
+            meta_data = None
         price_map = {}
-        if len(meta_data) >= 2:
+        if isinstance(meta_data, list) and len(meta_data) >= 2:
             for i, asset in enumerate(meta_data[0].get("universe", [])):
                 try:
                     price_map[asset["name"]] = float(meta_data[1][i]["markPx"])

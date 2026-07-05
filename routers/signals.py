@@ -28,27 +28,32 @@ async def fetch_wallet_state(client: httpx.AsyncClient, wallet: Wallet):
 
 async def fetch_meta_and_prices(client: httpx.AsyncClient):
     """Fetch meta + asset contexts once, return price map + funding."""
-    resp = await client.post(
-        "https://api.hyperliquid.xyz/info",
-        json={"type": "metaAndAssetCtxs"},
-        timeout=15
-    )
-    data = resp.json()
     price_map = {}
     avg_funding = 0.0
     btc_price = 0.0
-    if len(data) >= 2:
-        for i, asset in enumerate(data[0].get("universe", [])):
-            try:
-                coin = asset["name"]
-                mark_px = float(data[1][i].get("markPx", 0))
-                funding = float(data[1][i].get("funding", 0))
-                price_map[coin] = mark_px
-                if coin == "BTC":
-                    avg_funding = funding
-                    btc_price = mark_px
-            except Exception:
-                pass
+    try:
+        resp = await client.post(
+            "https://api.hyperliquid.xyz/info",
+            json={"type": "metaAndAssetCtxs"},
+            timeout=15
+        )
+        if resp.status_code != 200:
+            return price_map, avg_funding, btc_price
+        data = resp.json()
+        if isinstance(data, list) and len(data) >= 2:
+            for i, asset in enumerate(data[0].get("universe", [])):
+                try:
+                    coin = asset["name"]
+                    mark_px = float(data[1][i].get("markPx", 0))
+                    funding = float(data[1][i].get("funding", 0))
+                    price_map[coin] = mark_px
+                    if coin == "BTC":
+                        avg_funding = funding
+                        btc_price = mark_px
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"fetch_meta_and_prices error: {e}")
     return price_map, avg_funding, btc_price
 
 def format_whale_value(db_value: float | None) -> bool | None:
