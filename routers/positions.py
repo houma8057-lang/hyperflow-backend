@@ -13,15 +13,19 @@ async def get_positions(db: AsyncSession = Depends(get_db)):
     if not wallets:
         return {"summary": [], "detail": []}
     async with httpx.AsyncClient(timeout=30) as client:
-        meta_resp = await client.post("https://api.hyperliquid.xyz/info", json={"type": "metaAndAssetCtxs"})
-        meta_data = meta_resp.json()
         price_map = {}
-        if len(meta_data) >= 2:
-            for i, asset in enumerate(meta_data[0].get("universe", [])):
-                try:
-                    price_map[asset["name"]] = float(meta_data[1][i]["markPx"])
-                except:
-                    pass
+        try:
+            meta_resp = await client.post("https://api.hyperliquid.xyz/info", json={"type": "metaAndAssetCtxs"})
+            if meta_resp.status_code == 200:
+                meta_data = meta_resp.json()
+                if isinstance(meta_data, list) and len(meta_data) >= 2:
+                    for i, asset in enumerate(meta_data[0].get("universe", [])):
+                        try:
+                            price_map[asset["name"]] = float(meta_data[1][i]["markPx"])
+                        except:
+                            pass
+        except Exception as e:
+            print(f"positions meta fetch error: {e}")
         detail = []
         for wallet in wallets:
             try:
