@@ -93,7 +93,7 @@ async def mvrv_snapshot_job():
     from services.bgeometrics import get_latest_mvrv_zscore
     async with AsyncSessionLocal() as db:
         try:
-            zscore = await get_latest_mvrv_zscore()
+            zscore = await get_latest_mvrv_zscore(db)
             if zscore is None:
                 print("mvrv_snapshot_job: no data returned")
                 return

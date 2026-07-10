@@ -1,6 +1,8 @@
 import os
-import time
 import httpx
+from datetime import datetime, timezone, timedelta
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 BGEOMETRICS_TOKEN = os.environ.get("BGEOMETRICS_API_KEY", "3peU12OVuQ")
 BASE_URL = "https://api.bgeometrics.com/v1"
@@ -8,19 +10,36 @@ BASE_URL = "https://api.bgeometrics.com/v1"
 # Free plan: 10 req/hour, 15 req/day. Underlying data updates once per
 # day anyway, so a 24h cache loses no real freshness while cutting
 # daily usage from thousands (30s frontend polling) to ~3-6/day.
-CACHE_TTL_SECONDS = 24 * 60 * 60
+# Persisted in DB (metric_cache table) so it survives redeploys/cold starts,
+# unlike an in-memory dict.
+CACHE_TTL = timedelta(hours=24)
 
-_cache: dict[str, tuple[float, float]] = {}  # endpoint -> (value, fetched_at)
+async def _get_cached(db: AsyncSession, metric: str):
+    from models import MetricCache
+    row = (await db.execute(
+        select(MetricCache).where(MetricCache.metric == metric)
+    )).scalar_one_or_none()
+    return row
 
-async def _fetch_latest(endpoint: str) -> float | None:
+async def _save_cache(db: AsyncSession, metric: str, value: float, row):
+    from models import MetricCache
+    now = datetime.now(timezone.utc)
+    if row is None:
+        db.add(MetricCache(metric=metric, value=value, fetched_at=now))
+    else:
+        row.value = value
+        row.fetched_at = now
+    await db.commit()
+
+async def _fetch_latest(db: AsyncSession, endpoint: str, metric: str) -> float | None:
     """Fetch the single latest value for any BGeometrics metric.
-    Cached for CACHE_TTL_SECONDS; on any failure, falls back to the
-    last known value (even if stale) instead of returning None.
+    Cached in the metric_cache table for CACHE_TTL; on any failure,
+    falls back to the last known DB value (even if stale) instead of None.
     """
-    now = time.monotonic()
-    cached = _cache.get(endpoint)
-    if cached is not None and (now - cached[1]) < CACHE_TTL_SECONDS:
-        return cached[0]
+    row = await _get_cached(db, metric)
+    now = datetime.now(timezone.utc)
+    if row is not None and (now - row.fetched_at) < CACHE_TTL:
+        return row.value
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(
@@ -29,29 +48,29 @@ async def _fetch_latest(endpoint: str) -> float | None:
             )
             data = resp.json()
             if not data or not isinstance(data, list):
-                return cached[0] if cached else None
+                return row.value if row else None
             item = data[-1]
             for key in item:
                 if key not in ("d", "unixTs"):
                     val = item[key]
                     if val is not None and str(val) != "NaN":
                         result = float(val)
-                        _cache[endpoint] = (result, now)
-                        print(f"bgeometrics: fetched fresh {endpoint} = {result}")
+                        await _save_cache(db, metric, result, row)
+                        print(f"bgeometrics: fetched fresh {metric} = {result}")
                         return result
-            return cached[0] if cached else None
+            return row.value if row else None
     except Exception as e:
         print(f"bgeometrics error ({endpoint}): {e}")
-        return cached[0] if cached else None
+        return row.value if row else None
 
-async def get_latest_mvrv_zscore() -> float | None:
-    return await _fetch_latest("mvrv-zscore")
+async def get_latest_mvrv_zscore(db: AsyncSession) -> float | None:
+    return await _fetch_latest(db, "mvrv-zscore", "mvrv_z")
 
-async def get_latest_nupl() -> float | None:
-    return await _fetch_latest("nupl")
+async def get_latest_nupl(db: AsyncSession) -> float | None:
+    return await _fetch_latest(db, "nupl", "nupl")
 
-async def get_latest_sopr() -> float | None:
-    return await _fetch_latest("sopr")
+async def get_latest_sopr(db: AsyncSession) -> float | None:
+    return await _fetch_latest(db, "sopr", "sopr")
 
 def mvrv_zscore_to_score(zscore: float) -> float:
     if zscore < 0:

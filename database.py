@@ -99,6 +99,25 @@ async def init_db():
                 await conn.execute(text("UPDATE schema_version SET version = 3 WHERE id = 1"))
                 print("Migration v3 applied: created mvrv_history table")
 
+            # Migration v4: add metric_cache table (BGeometrics rate-limit cache)
+            if current_version < 4:
+                result = await conn.execute(text("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables
+                        WHERE table_name = 'metric_cache'
+                    )
+                """))
+                if not result.scalar():
+                    await conn.execute(text("""
+                        CREATE TABLE metric_cache (
+                            metric VARCHAR PRIMARY KEY,
+                            value FLOAT NOT NULL,
+                            fetched_at TIMESTAMPTZ NOT NULL
+                        )
+                    """))
+                await conn.execute(text("UPDATE schema_version SET version = 4 WHERE id = 1"))
+                print("Migration v4 applied: created metric_cache table")
+
 
 async def get_db():
     async with AsyncSessionLocal() as session:

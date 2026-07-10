@@ -255,11 +255,17 @@ async def calculate_unified_signal(
     price_map: dict
 ) -> dict:
 
-    # Fetch all external data in parallel
-    mvrv_z, nupl, sopr, oi_change, flip_result = await asyncio.gather(
-        get_latest_mvrv_zscore(),
-        get_latest_nupl(),
-        get_latest_sopr(),
+    # MVRV/NUPL/SOPR share the same `db` session and touch the DB
+    # (read + possible commit) via metric_cache, so they run sequentially
+    # to avoid concurrent use of one AsyncSession, which SQLAlchemy
+    # async does not support safely.
+    mvrv_z = await get_latest_mvrv_zscore(db)
+    nupl = await get_latest_nupl(db)
+    sopr = await get_latest_sopr(db)
+
+    # OI change and whale-flip detection are read-only against `db` and
+    # were already run together before this change; kept as-is.
+    oi_change, flip_result = await asyncio.gather(
         get_btc_oi_change(db),
         detect_whale_flips(db, current_states, price_map)
     )
