@@ -5,8 +5,23 @@ from database import get_db
 from models import WSIHistory, Wallet
 from datetime import datetime, timedelta
 import httpx
+import asyncio
 
 router = APIRouter()
+
+async def fetch_wallet_state(client: httpx.AsyncClient, wallet: Wallet):
+    """Fetch a single wallet's clearinghouse state; returns None on any failure."""
+    try:
+        resp = await client.post(
+            "https://api.hyperliquid.xyz/info",
+            json={"type": "clearinghouseState", "user": wallet.address}
+        )
+        state = resp.json()
+        state["wallet_address"] = wallet.address
+        state["wallet_label"] = wallet.label
+        return state
+    except Exception:
+        return None
 
 async def fetch_wsi_live(db: AsyncSession):
     wallets = (await db.execute(select(Wallet))).scalars().all()
@@ -218,30 +233,25 @@ async def get_reversal_score(db: AsyncSession = Depends(get_db)):
             total_long = 0.0
             total_short = 0.0
             current_states = []
-            for wallet in wallets:
-                try:
-                    resp = await client.post(
-                        "https://api.hyperliquid.xyz/info",
-                        json={"type": "clearinghouseState", "user": wallet.address}
-                    )
-                    state = resp.json()
-                    state["wallet_address"] = wallet.address
-                    state["wallet_label"] = wallet.label
-                    current_states.append(state)
-                    for ap in state.get("assetPositions", []):
-                        pos = ap.get("position", {})
-                        szi = float(pos.get("szi", 0))
-                        coin = pos.get("coin", "")
-                        px = price_map.get(coin, 0)
-                        if px == 0 or szi == 0:
-                            continue
-                        ntl = abs(szi) * px
-                        if szi > 0:
-                            total_long += ntl
-                        else:
-                            total_short += ntl
-                except:
+            wallet_results = await asyncio.gather(
+                *[fetch_wallet_state(client, w) for w in wallets]
+            )
+            for state in wallet_results:
+                if state is None:
                     continue
+                current_states.append(state)
+                for ap in state.get("assetPositions", []):
+                    pos = ap.get("position", {})
+                    szi = float(pos.get("szi", 0))
+                    coin = pos.get("coin", "")
+                    px = price_map.get(coin, 0)
+                    if px == 0 or szi == 0:
+                        continue
+                    ntl = abs(szi) * px
+                    if szi > 0:
+                        total_long += ntl
+                    else:
+                        total_short += ntl
 
         total = total_long + total_short
         wsi = round((total_long - total_short) / total, 3) if total > 0 else 0.0
