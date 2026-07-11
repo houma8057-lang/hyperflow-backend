@@ -1,5 +1,6 @@
 import httpx
 import asyncio
+import time
 from datetime import datetime, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
@@ -264,9 +265,11 @@ async def calculate_unified_signal(
     # (read + possible commit) via metric_cache, so they run sequentially
     # to avoid concurrent use of one AsyncSession, which SQLAlchemy
     # async does not support safely.
+    t0 = time.monotonic()
     mvrv_z = await get_latest_mvrv_zscore(db)
     nupl = await get_latest_nupl(db)
     sopr = await get_latest_sopr(db)
+    print(f"timing: unified_signal - mvrv/nupl/sopr cache reads (sequential) = {time.monotonic()-t0:.2f}s")
 
     # OI change and whale-flip detection are read-only against `db` and
     # were already run together before this change; kept as-is.
@@ -274,6 +277,7 @@ async def calculate_unified_signal(
         get_btc_oi_change(db),
         detect_whale_flips(db, current_states, price_map)
     )
+    print(f"timing: unified_signal - oi_change+whale_flips (parallel) = {time.monotonic()-t0:.2f}s")
 
     flip_data = flip_result
     flip_count = flip_data["flip_count"]

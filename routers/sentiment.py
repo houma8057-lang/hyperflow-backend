@@ -6,6 +6,7 @@ from models import WSIHistory, Wallet
 from datetime import datetime, timedelta
 import httpx
 import asyncio
+import time
 
 router = APIRouter()
 
@@ -204,6 +205,7 @@ async def get_market_context():
 @router.get("/sentiment/reversal-score")
 async def get_reversal_score(db: AsyncSession = Depends(get_db)):
     try:
+        t0 = time.monotonic()
         from services.unified_signal import calculate_unified_signal
 
         # 1. Fetch WSI + wallet states + prices
@@ -236,6 +238,7 @@ async def get_reversal_score(db: AsyncSession = Depends(get_db)):
             wallet_results = await asyncio.gather(
                 *[fetch_wallet_state(client, w) for w in wallets]
             )
+            print(f"timing: hyperliquid fetch (meta+8 wallets parallel) = {time.monotonic()-t0:.2f}s")
             for state in wallet_results:
                 if state is None:
                     continue
@@ -264,6 +267,7 @@ async def get_reversal_score(db: AsyncSession = Depends(get_db)):
             current_states=current_states,
             price_map=price_map
         )
+        print(f"timing: TOTAL request time = {time.monotonic()-t0:.2f}s")
 
         return result
 
