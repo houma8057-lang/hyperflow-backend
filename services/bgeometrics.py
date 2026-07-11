@@ -72,32 +72,27 @@ async def get_latest_nupl(db: AsyncSession) -> float | None:
 async def get_latest_sopr(db: AsyncSession) -> float | None:
     return await _fetch_latest(db, "sopr", "sopr")
 
-def mvrv_zscore_to_score(zscore: float) -> float:
-    if zscore < 0:
+def _lerp_score(value: float, low: float, mid: float, high: float) -> float:
+    """
+    Continuous -100..+100 score around a neutral midpoint, instead of
+    hard step buckets. `mid` maps to 0; `low`/`high` map to -100/+100,
+    clamped beyond that range. Replaces the old 4-bucket step functions,
+    which left MVRV/NUPL/SOPR silent at exactly 0.0 across wide "normal"
+    ranges and caused a hard jump right at SOPR=1.0.
+    """
+    if value <= low:
         return -100.0
-    elif zscore < 2:
-        return 0.0
-    elif zscore < 4:
-        return 50.0
-    else:
+    if value >= high:
         return 100.0
+    if value < mid:
+        return round(-100.0 * (mid - value) / (mid - low), 2)
+    return round(100.0 * (value - mid) / (high - mid), 2)
+
+def mvrv_zscore_to_score(zscore: float) -> float:
+    return _lerp_score(zscore, low=-1.0, mid=1.0, high=6.0)
 
 def nupl_to_score(nupl: float) -> float:
-    if nupl < 0:
-        return -100.0
-    elif nupl < 0.5:
-        return 0.0
-    elif nupl < 0.75:
-        return 50.0
-    else:
-        return 100.0
+    return _lerp_score(nupl, low=-0.25, mid=0.25, high=1.0)
 
 def sopr_to_score(sopr: float) -> float:
-    if sopr < 1.0:
-        return -100.0
-    elif sopr < 1.05:
-        return 0.0
-    elif sopr < 1.1:
-        return 50.0
-    else:
-        return 100.0
+    return _lerp_score(sopr, low=0.95, mid=1.025, high=1.15)
