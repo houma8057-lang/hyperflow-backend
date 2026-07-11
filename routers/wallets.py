@@ -28,9 +28,10 @@ async def add_wallet(data: WalletIn, db: AsyncSession = Depends(get_db)):
 async def diag_positions_count(db: AsyncSession = Depends(get_db)):
     """Temporary diagnostic endpoint. Safe to remove once its job is done."""
     from sqlalchemy import func as sqlfunc
-    from models import PositionSnapshot
-    total = (await db.execute(select(sqlfunc.count(PositionSnapshot.id)))).scalar()
-    return {"total_rows": total}
+    from models import PositionSnapshot, OIHistory
+    positions_total = (await db.execute(select(sqlfunc.count(PositionSnapshot.id)))).scalar()
+    oi_total = (await db.execute(select(sqlfunc.count(OIHistory.id)))).scalar()
+    return {"positions_snapshot_rows": positions_total, "oi_history_rows": oi_total}
 
 @router.get("/wallets")
 async def get_wallets(db: AsyncSession = Depends(get_db)):

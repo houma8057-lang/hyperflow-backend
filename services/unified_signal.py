@@ -253,6 +253,13 @@ async def detect_whale_flips(
 # Main unified signal calculator
 # ─────────────────────────────────────────
 
+async def _timed(label: str, coro):
+    """Diagnostic wrapper: times an individual coroutine inside a gather()."""
+    t = time.monotonic()
+    result = await coro
+    print(f"timing: {label} = {time.monotonic()-t:.2f}s")
+    return result
+
 async def calculate_unified_signal(
     db: AsyncSession,
     wsi: float,
@@ -271,13 +278,13 @@ async def calculate_unified_signal(
     sopr = await get_latest_sopr(db)
     print(f"timing: unified_signal - mvrv/nupl/sopr cache reads (sequential) = {time.monotonic()-t0:.2f}s")
 
-    # OI change and whale-flip detection are read-only against `db` and
-    # were already run together before this change; kept as-is.
+    # OI change and whale-flip detection are read-only against `db`.
+    # Each timed individually to find which one is the real bottleneck
+    # (previously only the combined gather time was visible).
     oi_change, flip_result = await asyncio.gather(
-        get_btc_oi_change(db),
-        detect_whale_flips(db, current_states, price_map)
+        _timed("get_btc_oi_change", get_btc_oi_change(db)),
+        _timed("detect_whale_flips", detect_whale_flips(db, current_states, price_map))
     )
-    print(f"timing: unified_signal - oi_change+whale_flips (parallel) = {time.monotonic()-t0:.2f}s")
 
     flip_data = flip_result
     flip_count = flip_data["flip_count"]
