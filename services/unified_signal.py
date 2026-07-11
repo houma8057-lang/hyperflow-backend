@@ -158,11 +158,16 @@ async def detect_whale_flips(
         total_whales = len(wallets_result.scalars().all())
         threshold_pct = 0.60  # 60% threshold
 
+        # snapshots is ordered newest-first; overwriting on every match
+        # (instead of "if key not in prev_sides") means the LAST write
+        # wins, i.e. the OLDEST snapshot inside the 24h window survives.
+        # The previous version kept the first (newest) match, which made
+        # this compare "now vs a few minutes ago" instead of "now vs 24h
+        # ago", so flips appeared and vanished within one snapshot_job
+        # cycle instead of reflecting a real 24h direction change.
         prev_sides = {}
         for snap in snapshots:
-            key = snap.wallet_address
-            if key not in prev_sides:
-                prev_sides[key] = snap.side
+            prev_sides[snap.wallet_address] = snap.side
 
         bullish_flips = []
         bearish_flips = []
