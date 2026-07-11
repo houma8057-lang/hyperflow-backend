@@ -29,7 +29,7 @@ class PositionSnapshot(Base):
     notional = Column(Float, nullable=False)
     unrealized_pnl = Column(Float, nullable=False)
     leverage = Column(Float, nullable=False)
-    timestamp = Column(DateTime, default=func.now())
+    timestamp = Column(DateTime, default=func.now(), index=True)
 
 class Alert(Base):
     __tablename__ = "alerts"

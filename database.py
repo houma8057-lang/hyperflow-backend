@@ -118,6 +118,25 @@ async def init_db():
                 await conn.execute(text("UPDATE schema_version SET version = 4 WHERE id = 1"))
                 print("Migration v4 applied: created metric_cache table")
 
+            # Migration v5: index positions_snapshot.timestamp
+            # (unindexed table had grown to ~930k+ rows, causing full
+            # scans and ~5s latency on detect_whale_flips / oi_change)
+            if current_version < 5:
+                result = await conn.execute(text("""
+                    SELECT EXISTS (
+                        SELECT FROM pg_indexes
+                        WHERE tablename = 'positions_snapshot'
+                        AND indexname = 'idx_positions_snapshot_timestamp'
+                    )
+                """))
+                if not result.scalar():
+                    await conn.execute(text("""
+                        CREATE INDEX idx_positions_snapshot_timestamp
+                        ON positions_snapshot (timestamp)
+                    """))
+                await conn.execute(text("UPDATE schema_version SET version = 5 WHERE id = 1"))
+                print("Migration v5 applied: indexed positions_snapshot.timestamp")
+
 
 async def get_db():
     async with AsyncSessionLocal() as session:
