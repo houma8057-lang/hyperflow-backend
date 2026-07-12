@@ -278,13 +278,18 @@ async def calculate_unified_signal(
     sopr = await get_latest_sopr(db)
     print(f"timing: unified_signal - mvrv/nupl/sopr cache reads (sequential) = {time.monotonic()-t0:.2f}s")
 
-    # OI change and whale-flip detection are read-only against `db`.
-    # Each timed individually to find which one is the real bottleneck
-    # (previously only the combined gather time was visible).
-    oi_change, flip_result = await asyncio.gather(
-        _timed("get_btc_oi_change", get_btc_oi_change(db)),
-        _timed("detect_whale_flips", detect_whale_flips(db, current_states, price_map))
-    )
+    # OI change and whale-flip detection each make 2 sequential
+    # db.execute() calls against the SAME `db` AsyncSession. Running
+    # them concurrently via gather() shares one session across
+    # concurrent coroutines - the exact unsafe pattern already avoided
+    # above for MVRV/NUPL/SOPR, but this pre-existing pairing was
+    # overlooked until now. Near-identical ~4-5s latency on both despite
+    # a 300x difference in table size (3K vs 932K rows), plus a
+    # proven-fast raw connection (13ms for SELECT 1), points to
+    # connection-level contention from sharing one session, not query
+    # complexity or table size. Sequential, like the block above.
+    oi_change = await _timed("get_btc_oi_change", get_btc_oi_change(db))
+    flip_result = await _timed("detect_whale_flips", detect_whale_flips(db, current_states, price_map))
 
     flip_data = flip_result
     flip_count = flip_data["flip_count"]
