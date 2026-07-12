@@ -24,6 +24,17 @@ async def add_wallet(data: WalletIn, db: AsyncSession = Depends(get_db)):
     await db.commit()
     return {"address": w.address, "label": w.label}
 
+@router.get("/diag/db-ping")
+async def diag_db_ping(db: AsyncSession = Depends(get_db)):
+    """Temporary diagnostic endpoint. Times a trivial round-trip with zero
+    table/query complexity, to isolate whether the latency is pure
+    network/connection overhead to Supabase vs anything about our tables."""
+    import time
+    from sqlalchemy import text
+    t0 = time.monotonic()
+    await db.execute(text("SELECT 1"))
+    return {"select_1_seconds": round(time.monotonic() - t0, 3)}
+
 @router.get("/diag/positions-count")
 async def diag_positions_count(db: AsyncSession = Depends(get_db)):
     """Temporary diagnostic endpoint. Safe to remove once its job is done."""
