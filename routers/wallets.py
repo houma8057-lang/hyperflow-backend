@@ -71,6 +71,86 @@ async def diag_db_ping(db: AsyncSession = Depends(get_db)):
     await db.execute(text("SELECT 1"))
     return {"select_1_seconds": round(time.monotonic() - t0, 3)}
 
+@router.get("/diag/whale-flip-compare")
+async def diag_whale_flip_compare(db: AsyncSession = Depends(get_db)):
+    """Temporary diagnostic endpoint. Recomputes prev_side (oldest 24h,
+    notional-weighted) and current_side (live, notional-weighted) for
+    each wallet side by side, to verify whether whale_flips=0 is correct
+    (all sides match) or a bug remains (some differ but were not
+    counted)."""
+    from models import PositionSnapshot, Wallet
+    from sqlalchemy import select, desc
+    from datetime import datetime, timedelta
+    import httpx
+
+    ago24 = datetime.utcnow() - timedelta(hours=24)
+    result = await db.execute(
+        select(PositionSnapshot)
+        .where(PositionSnapshot.timestamp >= ago24)
+        .order_by(desc(PositionSnapshot.timestamp))
+    )
+    snapshots = result.scalars().all()
+
+    oldest_ts = {}
+    for s in snapshots:
+        oldest_ts[s.wallet_address] = s.timestamp
+
+    prev_long = {}
+    prev_short = {}
+    for s in snapshots:
+        if s.timestamp != oldest_ts.get(s.wallet_address):
+            continue
+        if s.side == "LONG":
+            prev_long[s.wallet_address] = prev_long.get(s.wallet_address, 0.0) + s.notional
+        else:
+            prev_short[s.wallet_address] = prev_short.get(s.wallet_address, 0.0) + s.notional
+
+    prev_side = {}
+    for addr in set(list(prev_long.keys()) + list(prev_short.keys())):
+        prev_side[addr] = "LONG" if prev_long.get(addr, 0.0) > prev_short.get(addr, 0.0) else "SHORT"
+
+    wallets = (await db.execute(select(Wallet))).scalars().all()
+    current_side = {}
+    async with httpx.AsyncClient(timeout=20) as client:
+        meta_resp = await client.post("https://api.hyperliquid.xyz/info", json={"type": "metaAndAssetCtxs"})
+        meta_data = meta_resp.json()
+        price_map = {}
+        if isinstance(meta_data, list) and len(meta_data) >= 2:
+            for i, asset in enumerate(meta_data[0].get("universe", [])):
+                try:
+                    price_map[asset["name"]] = float(meta_data[1][i]["markPx"])
+                except Exception:
+                    pass
+        for w in wallets:
+            resp = await client.post("https://api.hyperliquid.xyz/info", json={"type": "clearinghouseState", "user": w.address})
+            data = resp.json()
+            long_ntl = 0.0
+            short_ntl = 0.0
+            for ap in data.get("assetPositions", []):
+                pos = ap.get("position", {})
+                szi = float(pos.get("szi", 0))
+                coin = pos.get("coin", "")
+                px = price_map.get(coin, 0)
+                if px == 0 or szi == 0:
+                    continue
+                ntl = abs(szi) * px
+                if szi > 0:
+                    long_ntl += ntl
+                else:
+                    short_ntl += ntl
+            current_side[w.address] = "LONG" if long_ntl > short_ntl else "SHORT"
+
+    comparison = []
+    for addr in current_side:
+        comparison.append({
+            "wallet": addr,
+            "prev_side": prev_side.get(addr, "NO_DATA"),
+            "current_side": current_side[addr],
+            "flipped": prev_side.get(addr) is not None and prev_side.get(addr) != current_side[addr]
+        })
+
+    return comparison
+
 @router.get("/diag/positions-count")
 async def diag_positions_count(db: AsyncSession = Depends(get_db)):
     """Temporary diagnostic endpoint. Safe to remove once its job is done."""
