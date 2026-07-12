@@ -24,6 +24,42 @@ async def add_wallet(data: WalletIn, db: AsyncSession = Depends(get_db)):
     await db.commit()
     return {"address": w.address, "label": w.label}
 
+@router.get("/diag/whale-flip-detail")
+async def diag_whale_flip_detail(db: AsyncSession = Depends(get_db)):
+    """Temporary diagnostic endpoint. For each wallet, shows every
+    position row from its OLDEST snapshot moment within the 24h window
+    - the same data prev_sides is built from in detect_whale_flips - to
+    check whether wallets hold multiple coins with mixed sides there,
+    which a single wallet_address->side dict cannot represent, unlike
+    current_side which is notional-weighted across all positions."""
+    from models import PositionSnapshot
+    from sqlalchemy import select, desc
+    from datetime import datetime, timedelta
+
+    ago24 = datetime.utcnow() - timedelta(hours=24)
+    result = await db.execute(
+        select(PositionSnapshot)
+        .where(PositionSnapshot.timestamp >= ago24)
+        .order_by(desc(PositionSnapshot.timestamp))
+    )
+    snapshots = result.scalars().all()
+
+    oldest_ts = {}
+    for s in snapshots:
+        oldest_ts[s.wallet_address] = s.timestamp
+
+    detail = {}
+    for s in snapshots:
+        if s.timestamp == oldest_ts.get(s.wallet_address):
+            detail.setdefault(s.wallet_address, []).append(
+                {"coin": s.coin, "side": s.side, "notional": s.notional}
+            )
+
+    return {
+        addr: {"position_count": len(rows), "positions": rows}
+        for addr, rows in detail.items()
+    }
+
 @router.get("/diag/db-ping")
 async def diag_db_ping(db: AsyncSession = Depends(get_db)):
     """Temporary diagnostic endpoint. Times a trivial round-trip with zero
