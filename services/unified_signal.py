@@ -159,16 +159,35 @@ async def detect_whale_flips(
         total_whales = len(wallets_result.scalars().all())
         threshold_pct = 0.60  # 60% threshold
 
-        # snapshots is ordered newest-first; overwriting on every match
-        # (instead of "if key not in prev_sides") means the LAST write
-        # wins, i.e. the OLDEST snapshot inside the 24h window survives.
-        # The previous version kept the first (newest) match, which made
-        # this compare "now vs a few minutes ago" instead of "now vs 24h
-        # ago", so flips appeared and vanished within one snapshot_job
-        # cycle instead of reflecting a real 24h direction change.
-        prev_sides = {}
+        # BUG (found via /api/diag/whale-flip-detail): each row in
+        # PositionSnapshot is ONE coin, not the whole wallet. A wallet
+        # commonly holds many coins with MIXED long/short sides (real
+        # example: one tracked wallet had 17 SHORT + 10 LONG positions
+        # simultaneously). Taking a single `snap.side` per wallet - even
+        # from the correct oldest timestamp - picks whichever coin's row
+        # happened to be encountered, not the wallet's actual dominant
+        # direction. current_side below already computes this correctly
+        # via notional-weighted long_ntl vs short_ntl; prev_sides must
+        # use the same method for the comparison to be meaningful.
+        oldest_ts_per_wallet = {}
         for snap in snapshots:
-            prev_sides[snap.wallet_address] = snap.side
+            oldest_ts_per_wallet[snap.wallet_address] = snap.timestamp
+
+        prev_long_ntl = {}
+        prev_short_ntl = {}
+        for snap in snapshots:
+            if snap.timestamp != oldest_ts_per_wallet.get(snap.wallet_address):
+                continue
+            if snap.side == "LONG":
+                prev_long_ntl[snap.wallet_address] = prev_long_ntl.get(snap.wallet_address, 0.0) + snap.notional
+            else:
+                prev_short_ntl[snap.wallet_address] = prev_short_ntl.get(snap.wallet_address, 0.0) + snap.notional
+
+        prev_sides = {}
+        for addr in set(list(prev_long_ntl.keys()) + list(prev_short_ntl.keys())):
+            long_v = prev_long_ntl.get(addr, 0.0)
+            short_v = prev_short_ntl.get(addr, 0.0)
+            prev_sides[addr] = "LONG" if long_v > short_v else "SHORT"
 
         bullish_flips = []
         bearish_flips = []
