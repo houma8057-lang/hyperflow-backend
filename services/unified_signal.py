@@ -14,12 +14,11 @@ from services.bgeometrics import (
 # Weights (must sum to 100)
 # ─────────────────────────────────────────
 WEIGHTS = {
-    "wsi":        20,
+    "wsi":        25,
     "funding":    15,
     "mvrv":       20,
     "nupl":       20,
     "sopr":       10,
-    "whale_flip":  5,
     "oi_change":  10,
 }
 
@@ -75,17 +74,29 @@ def oi_to_score(oi_change_pct: float, wsi: float) -> float:
 # Signal label
 # ─────────────────────────────────────────
 
-def score_to_signal(score: float) -> str:
-    if score <= -70:
-        return "STRONG BUY"
-    elif score <= -40:
+def score_to_signal(score: float, mvrv_score: float = 0.0, nupl_score: float = 0.0, sopr_score: float = 0.0) -> str:
+    # STRONG is reserved for real on-chain consensus, not just the
+    # combined weighted number crossing +-70 (which could happen from
+    # one dominant component like WSI alone). Requires at least 2 of
+    # the 3 independent on-chain scores to themselves be at extreme
+    # (>=70 or <=-70) and agree in direction with the combined score,
+    # matching what was actually observed at the confirmed FTX-crash
+    # bottom (2022-11-09: all 3 at -73 to -100). Without consensus,
+    # a combined score crossing +-70 is downgraded to WEAK.
+    on_chain = [mvrv_score, nupl_score, sopr_score]
+
+    if score <= -40:
+        extreme_agree = sum(1 for s in on_chain if s <= -70)
+        if score <= -70 and extreme_agree >= 2:
+            return "STRONG BUY"
         return "WEAK BUY"
     elif score <= 40:
         return "NEUTRAL"
-    elif score <= 70:
-        return "WEAK SELL"
     else:
-        return "STRONG SELL"
+        extreme_agree = sum(1 for s in on_chain if s >= 70)
+        if score >= 70 and extreme_agree >= 2:
+            return "STRONG SELL"
+        return "WEAK SELL"
 
 # ─────────────────────────────────────────
 # OI change calculator
@@ -321,7 +332,6 @@ async def calculate_unified_signal(
         "mvrv":       mvrv_zscore_to_score(mvrv_z) if mvrv_z is not None else 0.0,
         "nupl":       nupl_to_score(nupl) if nupl is not None else 0.0,
         "sopr":       sopr_to_score(sopr) if sopr is not None else 0.0,
-        "whale_flip": whale_flip_to_score(flip_count, flip_dir),
         "oi_change":  oi_to_score(oi_change, wsi),
     }
 
@@ -329,7 +339,7 @@ async def calculate_unified_signal(
     total = sum(scores[k] * WEIGHTS[k] / 100 for k in WEIGHTS)
     total = round(max(-100, min(100, total)), 1)
 
-    signal = score_to_signal(total)
+    signal = score_to_signal(total, scores.get('mvrv', 0)*1.0, scores.get('nupl', 0)*1.0, scores.get('sopr', 0)*1.0)
 
     return {
         "score": total,
@@ -349,7 +359,6 @@ async def calculate_unified_signal(
             "mvrv_score":       round(scores["mvrv"] * WEIGHTS["mvrv"] / 100, 2),
             "nupl_score":       round(scores["nupl"] * WEIGHTS["nupl"] / 100, 2),
             "sopr_score":       round(scores["sopr"] * WEIGHTS["sopr"] / 100, 2),
-            "whale_flip_score": round(scores["whale_flip"] * WEIGHTS["whale_flip"] / 100, 2),
             "oi_change_score":  round(scores["oi_change"] * WEIGHTS["oi_change"] / 100, 2),
         },
         "raw": {

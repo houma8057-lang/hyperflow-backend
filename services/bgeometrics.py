@@ -89,10 +89,18 @@ def _lerp_score(value: float, low: float, mid: float, high: float) -> float:
     return round(100.0 * (value - mid) / (high - mid), 2)
 
 def mvrv_zscore_to_score(zscore: float) -> float:
-    return _lerp_score(zscore, low=-1.0, mid=1.0, high=6.0)
+    # Recalibrated 2026-07-15 against actual 2022-2025 cycle data
+    # (20 local tops/bottoms + the confirmed Nov 2022 FTX-crash cycle
+    # extreme). Old thresholds (low=-1.0, high=6.0) were tuned to
+    # 2017/2021-era extremes never reached this cycle: observed max
+    # was 3.35 (Dec 2024), observed min was -0.36 (FTX crash).
+    return _lerp_score(zscore, low=-0.36, mid=1.57, high=3.5)
 
 def nupl_to_score(nupl: float) -> float:
-    return _lerp_score(nupl, low=-0.25, mid=0.25, high=1.0)
+    # Recalibrated 2026-07-15, same basis as mvrv_zscore_to_score above.
+    # Old thresholds (low=-0.25, high=1.0); observed max was 0.64
+    # (Mar 2024), observed min was -0.32 (FTX crash).
+    return _lerp_score(nupl, low=-0.32, mid=0.165, high=0.65)
 
 def sopr_to_score(sopr: float) -> float:
     return _lerp_score(sopr, low=0.95, mid=1.025, high=1.15)
