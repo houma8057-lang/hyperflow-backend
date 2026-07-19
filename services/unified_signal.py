@@ -74,6 +74,22 @@ def oi_to_score(oi_change_pct: float, wsi: float) -> float:
 # Signal label
 # ─────────────────────────────────────────
 
+# KNOWN LIMITATION (verified via 4-year backtest, 2026-07-15):
+# MVRV/NUPL are cumulative valuation metrics, not price-momentum
+# indicators. Backtest showed them excellent at catching sharp panic
+# bottoms (correctly flagged STRONG BUY for 48 straight days starting
+# 2022-11-09, the exact FTX-crash bottom), but structurally SLOW at
+# catching price tops: on-chain extreme was Dec 2024 (MVRV=3.35), while
+# the actual price top came 10 months later in Oct 2025. Raising the
+# threshold does not fix this - it's a lag inherent to what these
+# metrics measure, not a calibration error.
+#
+# FUTURE IDEA (not implemented): a price-vs-onchain DIVERGENCE detector
+# (price making new highs while MVRV/NUPL are flat or falling) would
+# likely catch tops earlier than waiting for an absolute ceiling, since
+# it flags the moment on-chain strength stops confirming price - a
+# classic bearish-divergence pattern. Needs its own design/testing pass.
+
 def score_to_signal(score: float, mvrv_score: float = 0.0, nupl_score: float = 0.0, sopr_score: float = 0.0) -> str:
     # STRONG is reserved for real on-chain consensus, not just the
     # combined weighted number crossing +-70 (which could happen from
