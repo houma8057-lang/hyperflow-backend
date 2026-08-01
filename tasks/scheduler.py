@@ -1,11 +1,9 @@
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from database import AsyncSessionLocal
-from models import Wallet, WSIHistory, PositionSnapshot, Alert, SystemSettings, OIHistory
+from models import Wallet, PositionSnapshot, OIHistory
 from services.hyperliquid import get_clearinghouse_state, get_meta_and_asset_ctxs
-from services.defillama import get_dry_powder
-from services.calculations import WSICalculator
-from sqlalchemy import select, desc
-from datetime import datetime, timedelta, timezone
+from sqlalchemy import select
+from datetime import datetime, timezone
 import asyncio
 import httpx
 
@@ -21,11 +19,9 @@ async def snapshot_job():
             meta_ctxs = await get_meta_and_asset_ctxs()
             if not meta_ctxs:
                 return
-            states = []
             for w in wallets:
                 state = await get_clearinghouse_state(w.address)
                 if state:
-                    states.append(state)
                     for ap in state.get("assetPositions", []):
                         pos = ap.get("position", {})
                         szi = float(pos.get("szi", 0))
@@ -43,23 +39,8 @@ async def snapshot_job():
                         )
                         db.add(snap)
                 await asyncio.sleep(0.2)
-            calc = WSICalculator()
-            result = calc.calculate(states, meta_ctxs)
-            ago24 = datetime.utcnow() - timedelta(hours=24)
-            old = (await db.execute(select(WSIHistory).where(WSIHistory.timestamp.isnot(None)).where(WSIHistory.timestamp <= ago24).order_by(desc(WSIHistory.timestamp)).limit(1))).scalar_one_or_none()
-            delta_wsi = result["wsi"] - old.wsi_value if old else 0.0
-            dp = await get_dry_powder()
-            dry = dp.get("dry_powder_pct", 0) / 100
-            reversal = round(0.5 * delta_wsi + 0.2 * dry, 3)
-            entry = WSIHistory(timestamp=datetime.now(timezone.utc), wsi_value=result["wsi"], total_long_ntl=result["total_long_ntl"], total_short_ntl=result["total_short_ntl"], wallet_count=len(wallets), reversal_score=reversal)
-            db.add(entry)
-            settings = (await db.execute(select(SystemSettings).where(SystemSettings.id == 1))).scalar_one_or_none()
-            threshold = settings.alert_threshold if settings else 0.60
-            if abs(reversal) > threshold:
-                alert = Alert(reversal_score=reversal, signal_type="BOTTOM" if reversal > 0 else "TOP", wsi_at_trigger=result["wsi"], delta_wsi_24h=delta_wsi, oi_divergence=0.0, dry_powder=dry)
-                db.add(alert)
             await db.commit()
-            print(f"snapshot_job: SUCCESS, saved WSI={result['wsi']}")
+            print(f"snapshot_job: SUCCESS, saved position snapshots for {len(wallets)} wallets")
         except Exception as e:
             print(f"snapshot_job error: {e}")
 
@@ -97,7 +78,6 @@ async def mvrv_snapshot_job():
             if zscore is None:
                 print("mvrv_snapshot_job: no data returned")
                 return
-            from sqlalchemy import func
             from datetime import date
             today = date.today().isoformat()
             db.add(MVRVHistory(
