@@ -37,3 +37,24 @@ async def delete_wallet(address: str, db: AsyncSession = Depends(get_db)):
     await db.delete(w)
     await db.commit()
     return {"deleted": address}
+
+@router.get("/diag/data-range")
+async def diag_data_range(db: AsyncSession = Depends(get_db)):
+    """Temporary diagnostic endpoint. Reports oldest/newest timestamp and
+    row count for OIHistory and PositionSnapshot, to check whether there's
+    enough historical depth for OI-threshold recalibration or a long-window
+    whale-direction gauge before designing either. Safe to remove after."""
+    from sqlalchemy import func as sqlfunc
+    from models import OIHistory, PositionSnapshot
+
+    oi_stats = (await db.execute(
+        select(sqlfunc.min(OIHistory.timestamp), sqlfunc.max(OIHistory.timestamp), sqlfunc.count(OIHistory.id))
+    )).one()
+    pos_stats = (await db.execute(
+        select(sqlfunc.min(PositionSnapshot.timestamp), sqlfunc.max(PositionSnapshot.timestamp), sqlfunc.count(PositionSnapshot.id))
+    )).one()
+
+    return {
+        "oi_history": {"oldest": oi_stats[0], "newest": oi_stats[1], "rows": oi_stats[2]},
+        "positions_snapshot": {"oldest": pos_stats[0], "newest": pos_stats[1], "rows": pos_stats[2]},
+    }
