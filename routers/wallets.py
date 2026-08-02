@@ -48,3 +48,49 @@ async def diag_divergence_check(db: AsyncSession = Depends(get_db)):
     continuously. Safe to remove once reviewed."""
     from services.divergence import detect_price_onchain_divergence
     return await detect_price_onchain_divergence(db)
+
+
+@router.get("/diag/divergence-backtest")
+async def diag_divergence_backtest(
+    start_date: str = "2024-08-01",
+    end_date: str = "2025-11-01",
+    step_days: int = 7,
+    db: AsyncSession = Depends(get_db)
+):
+    """Temporary diagnostic endpoint. Re-runs the exact same divergence
+    logic as-of each date in [start_date, end_date] (every step_days),
+    using only rows dated on or before that date - to see whether it
+    would have flagged bearish divergence at some point during the
+    actual 2025 topping process (Z-score peaked 2024-12-11, price
+    peaked 2025-10-06), instead of only checking today (too far past
+    both events for the rolling window to still contain them). Safe to
+    remove once reviewed."""
+    from services.divergence import WINDOW_DAYS, _assess_divergence
+    from datetime import datetime, timedelta
+    from models import MVRVHistory
+
+    all_rows = (await db.execute(
+        select(MVRVHistory)
+        .where(MVRVHistory.btc_price.isnot(None))
+        .order_by(MVRVHistory.date)
+    )).scalars().all()
+
+    results = []
+    current = datetime.strptime(start_date, "%Y-%m-%d")
+    end = datetime.strptime(end_date, "%Y-%m-%d")
+    while current <= end:
+        as_of = current.date().isoformat()
+        window_start = (current - timedelta(days=WINDOW_DAYS)).date().isoformat()
+        window_rows = [r for r in all_rows if window_start <= r.date <= as_of]
+        assessment = _assess_divergence(window_rows)
+        results.append({
+            "as_of": as_of,
+            "price": assessment.get("latest_price"),
+            "zscore": assessment.get("latest_zscore"),
+            "price_from_high_pct": assessment.get("price_from_high_pct"),
+            "z_gap_from_high": assessment.get("z_gap_from_high"),
+            "direction": assessment.get("direction"),
+        })
+        current += timedelta(days=step_days)
+
+    return {"results": results, "count": len(results)}
