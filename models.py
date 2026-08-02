@@ -84,6 +84,7 @@ class MVRVHistory(Base):
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
     date = Column(String, nullable=False)
     zscore = Column(Float, nullable=False)
+    btc_price = Column(Float, nullable=True)
 
 class MetricCache(Base):
     __tablename__ = "metric_cache"

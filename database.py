@@ -137,6 +137,22 @@ async def init_db():
                 await conn.execute(text("UPDATE schema_version SET version = 5 WHERE id = 1"))
                 print("Migration v5 applied: indexed positions_snapshot.timestamp")
 
+            # Migration v6: add btc_price to mvrv_history
+            # (needed for the price-vs-onchain divergence detector: comparing
+            # rolling MVRV Z-score highs against rolling BTC price highs on
+            # the same date axis)
+            if current_version < 6:
+                result = await conn.execute(text("""
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_name = 'mvrv_history' AND column_name = 'btc_price'
+                """))
+                if not result.scalar():
+                    await conn.execute(text("""
+                        ALTER TABLE mvrv_history ADD COLUMN btc_price FLOAT
+                    """))
+                await conn.execute(text("UPDATE schema_version SET version = 6 WHERE id = 1"))
+                print("Migration v6 applied: added btc_price to mvrv_history")
+
 
 async def get_db():
     async with AsyncSessionLocal() as session:

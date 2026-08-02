@@ -69,7 +69,10 @@ async def oi_snapshot_job():
             print(f"oi_snapshot_job error: {e}")
 
 async def mvrv_snapshot_job():
-    """Fetch and store latest MVRV Z-Score once per day"""
+    """Fetch and store latest MVRV Z-Score and BTC price once per day.
+    btc_price is stored alongside zscore (same date axis) so the
+    divergence detector can compare rolling highs of each directly via
+    a single table, without a second live API call at signal time."""
     from models import MVRVHistory
     from services.bgeometrics import get_latest_mvrv_zscore
     async with AsyncSessionLocal() as db:
@@ -78,15 +81,28 @@ async def mvrv_snapshot_job():
             if zscore is None:
                 print("mvrv_snapshot_job: no data returned")
                 return
+
+            btc_price = None
+            meta_ctxs = await get_meta_and_asset_ctxs()
+            if meta_ctxs and len(meta_ctxs) >= 2:
+                for i, asset in enumerate(meta_ctxs[0].get("universe", [])):
+                    if asset.get("name") == "BTC":
+                        try:
+                            btc_price = float(meta_ctxs[1][i].get("markPx", 0)) or None
+                        except Exception:
+                            pass
+                        break
+
             from datetime import date
             today = date.today().isoformat()
             db.add(MVRVHistory(
                 timestamp=datetime.now(timezone.utc),
                 date=today,
-                zscore=zscore
+                zscore=zscore,
+                btc_price=btc_price
             ))
             await db.commit()
-            print(f"mvrv_snapshot_job: saved zscore={zscore} for {today}")
+            print(f"mvrv_snapshot_job: saved zscore={zscore}, btc_price={btc_price} for {today}")
         except Exception as e:
             print(f"mvrv_snapshot_job error: {e}")
 
