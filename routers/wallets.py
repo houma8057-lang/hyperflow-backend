@@ -156,30 +156,43 @@ async def diag_backfill_mvrv_price_history(db: AsyncSession = Depends(get_db)):
     oldest_date = min(mvrv_by_date.keys())
     start_ms = int(datetime.strptime(oldest_date, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp() * 1000)
 
+    end_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+
     price_by_date = {}
     async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(
-            "https://api.binance.com/api/v3/klines",
-            params={"symbol": "BTCUSDT", "interval": "1d", "startTime": start_ms, "limit": 1000}
+        resp = await client.post(
+            "https://api.hyperliquid.xyz/info",
+            json={"type": "candleSnapshot", "req": {"coin": "BTC", "interval": "1d", "startTime": start_ms, "endTime": end_ms}}
         )
+        http_status_hl = resp.status_code
         try:
-            klines = resp.json()
+            candles = resp.json()
         except Exception as e:
-            return {"status": "error", "stage": "binance", "detail": f"invalid JSON: {e}"}
-        if not isinstance(klines, list):
-            return {"status": "error", "stage": "binance", "detail": f"unexpected response: {klines}"}
-        for k in klines:
+            return {"status": "error", "stage": "hyperliquid", "http_status": http_status_hl, "detail": f"invalid JSON: {e}", "raw_snippet": resp.text[:300]}
+        if not isinstance(candles, list):
+            return {"status": "error", "stage": "hyperliquid", "http_status": http_status_hl, "detail": f"response is {type(candles).__name__}, not a list", "raw_value": candles}
+        if len(candles) == 0:
+            return {"status": "error", "stage": "hyperliquid", "http_status": http_status_hl, "detail": "empty candle list - BTC market may not have existed this far back"}
+        for k in candles:
             try:
-                d = datetime.utcfromtimestamp(k[0] / 1000).date().isoformat()
-                price_by_date[d] = float(k[4])
+                d = datetime.utcfromtimestamp(k["t"] / 1000).date().isoformat()
+                price_by_date[d] = float(k["c"])
             except Exception:
                 continue
+
+    if not price_by_date:
+        return {
+            "status": "error", "stage": "hyperliquid", "http_status": http_status_hl,
+            "detail": "candle list had items but none parsed", "sample_candle": candles[0]
+        }
 
     combined = {d: (mvrv_by_date[d], price_by_date[d]) for d in mvrv_by_date if d in price_by_date}
     if not combined:
         return {
-            "status": "error", "stage": "merge", "detail": "no overlapping dates between BGeometrics and Binance",
-            "bgeometrics_dates": len(mvrv_by_date), "binance_dates": len(price_by_date),
+            "status": "error", "stage": "merge", "detail": "no overlapping dates between BGeometrics and Hyperliquid",
+            "bgeometrics_dates": len(mvrv_by_date), "hyperliquid_dates": len(price_by_date),
+            "bgeometrics_range": {"oldest": min(mvrv_by_date), "newest": max(mvrv_by_date)},
+            "hyperliquid_range": {"oldest": min(price_by_date), "newest": max(price_by_date)},
         }
 
     existing_rows = (await db.execute(select(MVRVHistory))).scalars().all()
@@ -206,7 +219,7 @@ async def diag_backfill_mvrv_price_history(db: AsyncSession = Depends(get_db)):
     return {
         "status": "ok",
         "bgeometrics_dates": len(mvrv_by_date),
-        "binance_dates": len(price_by_date),
+        "hyperliquid_dates": len(price_by_date),
         "matched_dates": len(combined),
         "inserted": inserted,
         "updated_existing_with_price": updated,
