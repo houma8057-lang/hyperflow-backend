@@ -37,3 +37,14 @@ async def delete_wallet(address: str, db: AsyncSession = Depends(get_db)):
     await db.delete(w)
     await db.commit()
     return {"deleted": address}
+
+@router.get("/diag/divergence-check")
+async def diag_divergence_check(db: AsyncSession = Depends(get_db)):
+    """Temporary diagnostic endpoint. Runs the new price-vs-onchain
+    divergence detector against live mvrv_history data and returns its
+    full output, to sanity-check it against known reality before wiring
+    it into the live signal. Expect is_active=false most of the time -
+    this fires only near actual topping/bottoming moments, not
+    continuously. Safe to remove once reviewed."""
+    from services.divergence import detect_price_onchain_divergence
+    return await detect_price_onchain_divergence(db)
