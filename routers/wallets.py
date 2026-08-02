@@ -59,6 +59,39 @@ async def diag_data_range(db: AsyncSession = Depends(get_db)):
         "positions_snapshot": {"oldest": pos_stats[0], "newest": pos_stats[1], "rows": pos_stats[2]},
     }
 
+@router.get("/diag/bgeometrics-raw")
+async def diag_bgeometrics_raw(limit: int = 1000):
+    """Temporary diagnostic endpoint. Calls BGeometrics mvrv-zscore with a
+    given limit and returns HTTP status, raw response type/length, and a
+    sample item verbatim - to see exactly why a large-limit historical
+    request returned nothing usable, instead of guessing. Safe to remove
+    once the backfill works."""
+    import httpx
+    from services.bgeometrics import BGEOMETRICS_TOKEN, BASE_URL
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(
+            f"{BASE_URL}/mvrv-zscore",
+            params={"token": BGEOMETRICS_TOKEN, "limit": limit}
+        )
+        result = {
+            "requested_limit": limit,
+            "http_status": resp.status_code,
+            "raw_text_first_500": resp.text[:500],
+        }
+        try:
+            data = resp.json()
+            result["parsed_type"] = type(data).__name__
+            if isinstance(data, list):
+                result["list_length"] = len(data)
+                result["first_item"] = data[0] if data else None
+                result["last_item"] = data[-1] if data else None
+            else:
+                result["parsed_value"] = data
+        except Exception as e:
+            result["json_parse_error"] = str(e)
+        return result
+
 @router.get("/diag/backfill-mvrv-price-history")
 async def diag_backfill_mvrv_price_history(db: AsyncSession = Depends(get_db)):
     """Temporary one-time diagnostic endpoint. Backfills mvrv_history with
@@ -82,12 +115,15 @@ async def diag_backfill_mvrv_price_history(db: AsyncSession = Depends(get_db)):
             f"{BASE_URL}/mvrv-zscore",
             params={"token": BGEOMETRICS_TOKEN, "limit": 1000}
         )
+        http_status = resp.status_code
         try:
             data = resp.json()
         except Exception as e:
-            return {"status": "error", "stage": "bgeometrics", "detail": f"invalid JSON: {e}"}
+            return {"status": "error", "stage": "bgeometrics", "http_status": http_status, "detail": f"invalid JSON: {e}", "raw_snippet": resp.text[:300]}
         if not isinstance(data, list):
-            return {"status": "error", "stage": "bgeometrics", "detail": f"unexpected response: {data}"}
+            return {"status": "error", "stage": "bgeometrics", "http_status": http_status, "detail": f"response is {type(data).__name__}, not a list", "raw_value": data}
+        if len(data) == 0:
+            return {"status": "error", "stage": "bgeometrics", "http_status": http_status, "detail": "response was an empty list"}
         for item in data:
             if not isinstance(item, dict) or "d" not in item:
                 continue
@@ -110,7 +146,11 @@ async def diag_backfill_mvrv_price_history(db: AsyncSession = Depends(get_db)):
             mvrv_by_date[d] = val
 
     if not mvrv_by_date:
-        return {"status": "error", "stage": "bgeometrics", "detail": "no MVRV rows parsed"}
+        return {
+            "status": "error", "stage": "bgeometrics", "http_status": http_status,
+            "detail": "list had items but none parsed into a usable date+value",
+            "list_length": len(data), "sample_item": data[0]
+        }
 
     oldest_date = min(mvrv_by_date.keys())
     start_ms = int(datetime.strptime(oldest_date, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp() * 1000)
@@ -137,11 +177,8 @@ async def diag_backfill_mvrv_price_history(db: AsyncSession = Depends(get_db)):
     combined = {d: (mvrv_by_date[d], price_by_date[d]) for d in mvrv_by_date if d in price_by_date}
     if not combined:
         return {
-            "status": "error",
-            "stage": "merge",
-            "detail": "no overlapping dates between BGeometrics and Binance",
-            "bgeometrics_dates": len(mvrv_by_date),
-            "binance_dates": len(price_by_date),
+            "status": "error", "stage": "merge", "detail": "no overlapping dates between BGeometrics and Binance",
+            "bgeometrics_dates": len(mvrv_by_date), "binance_dates": len(price_by_date),
         }
 
     existing_rows = (await db.execute(select(MVRVHistory))).scalars().all()
