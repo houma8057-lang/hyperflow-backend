@@ -140,7 +140,8 @@ async def diag_backfill_mvrv_price_history(db: AsyncSession = Depends(get_db)):
             if val is None:
                 continue
             try:
-                d = datetime.strptime(item["d"], "%d-%m-%Y").date().isoformat()
+                datetime.strptime(item["d"], "%Y-%m-%d")  # validate format only
+                d = item["d"]
             except Exception:
                 continue
             mvrv_by_date[d] = val
