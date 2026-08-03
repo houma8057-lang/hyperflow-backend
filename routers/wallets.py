@@ -89,6 +89,8 @@ async def diag_divergence_backtest(
             "zscore": assessment.get("latest_zscore"),
             "price_from_high_pct": assessment.get("price_from_high_pct"),
             "z_gap_from_high": assessment.get("z_gap_from_high"),
+            "price_from_low_pct": assessment.get("price_from_low_pct"),
+            "z_gap_from_low": assessment.get("z_gap_from_low"),
             "direction": assessment.get("direction"),
         })
         current += timedelta(days=step_days)
