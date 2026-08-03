@@ -9,10 +9,8 @@ from services.bgeometrics import (
     get_latest_mvrv_zscore, get_latest_nupl, get_latest_sopr,
     mvrv_zscore_to_score, nupl_to_score, sopr_to_score
 )
+from services.divergence import detect_price_onchain_divergence
 
-# ─────────────────────────────────────────
-# Weights (must sum to 100)
-# ─────────────────────────────────────────
 WEIGHTS = {
     "wsi":        25,
     "funding":    15,
@@ -21,10 +19,6 @@ WEIGHTS = {
     "sopr":       10,
     "oi_change":  10,
 }
-
-# ─────────────────────────────────────────
-# Score converters
-# ─────────────────────────────────────────
 
 def wsi_to_score(wsi: float) -> float:
     return round(wsi * 100, 2)
@@ -62,17 +56,12 @@ def oi_to_score(oi_change_pct: float, wsi: float) -> float:
     else:
         base = 20.0
 
-    # Amplify if aligned with WSI direction
     if base < 0 and wsi < -0.3:
         base = max(-100, base * 1.25)
     elif base > 0 and wsi > 0.3:
         base = min(100, base * 1.25)
 
     return round(base, 2)
-
-# ─────────────────────────────────────────
-# Signal label
-# ─────────────────────────────────────────
 
 # KNOWN LIMITATION (verified via 4-year backtest, 2026-07-15):
 # MVRV/NUPL are cumulative valuation metrics, not price-momentum
@@ -84,21 +73,16 @@ def oi_to_score(oi_change_pct: float, wsi: float) -> float:
 # threshold does not fix this - it's a lag inherent to what these
 # metrics measure, not a calibration error.
 #
-# FUTURE IDEA (not implemented): a price-vs-onchain DIVERGENCE detector
-# (price making new highs while MVRV/NUPL are flat or falling) would
-# likely catch tops earlier than waiting for an absolute ceiling, since
-# it flags the moment on-chain strength stops confirming price - a
-# classic bearish-divergence pattern. Needs its own design/testing pass.
-
+# UPDATE (2026-08-02): the divergence detector (services/divergence.py)
+# is the implemented version of the "future idea" that used to be noted
+# here. Backtested against both reference cycles: correctly clustered
+# "bearish" flags in the months before the Oct 2025 top (first real
+# cluster in May 2025, ~5 months early), and correctly stayed silent
+# through the Nov 2022 FTX bottom (a single sharp V-shaped crash has no
+# earlier local extreme to diverge against - structurally different
+# from a multi-attempt topping process, not a gap in the tool).
+#
 def score_to_signal(score: float, mvrv_score: float = 0.0, nupl_score: float = 0.0, sopr_score: float = 0.0) -> str:
-    # STRONG is reserved for real on-chain consensus, not just the
-    # combined weighted number crossing +-70 (which could happen from
-    # one dominant component like WSI alone). Requires at least 2 of
-    # the 3 independent on-chain scores to themselves be at extreme
-    # (>=70 or <=-70) and agree in direction with the combined score,
-    # matching what was actually observed at the confirmed FTX-crash
-    # bottom (2022-11-09: all 3 at -73 to -100). Without consensus,
-    # a combined score crossing +-70 is downgraded to WEAK.
     on_chain = [mvrv_score, nupl_score, sopr_score]
 
     if score <= -40:
@@ -113,10 +97,6 @@ def score_to_signal(score: float, mvrv_score: float = 0.0, nupl_score: float = 0
         if score >= 70 and extreme_agree >= 2:
             return "STRONG SELL"
         return "WEAK SELL"
-
-# ─────────────────────────────────────────
-# OI change calculator
-# ─────────────────────────────────────────
 
 async def get_btc_oi_change(db: AsyncSession) -> float:
     """
@@ -157,10 +137,6 @@ async def get_btc_oi_change(db: AsyncSession) -> float:
         print(f"oi_change error: {e}")
         return 0.0
 
-# ─────────────────────────────────────────
-# Whale flip detector
-# ─────────────────────────────────────────
-
 async def detect_whale_flips(
     db: AsyncSession,
     current_states: list,
@@ -181,21 +157,10 @@ async def detect_whale_flips(
         )
         snapshots = result.scalars().all()
 
-        # Get total whale count from DB
         wallets_result = await db.execute(select(Wallet))
         total_whales = len(wallets_result.scalars().all())
-        threshold_pct = 0.60  # 60% threshold
+        threshold_pct = 0.60
 
-        # BUG (found via /api/diag/whale-flip-detail): each row in
-        # PositionSnapshot is ONE coin, not the whole wallet. A wallet
-        # commonly holds many coins with MIXED long/short sides (real
-        # example: one tracked wallet had 17 SHORT + 10 LONG positions
-        # simultaneously). Taking a single `snap.side` per wallet - even
-        # from the correct oldest timestamp - picks whichever coin's row
-        # happened to be encountered, not the wallet's actual dominant
-        # direction. current_side below already computes this correctly
-        # via notional-weighted long_ntl vs short_ntl; prev_sides must
-        # use the same method for the comparison to be meaningful.
         oldest_ts_per_wallet = {}
         for snap in snapshots:
             oldest_ts_per_wallet[snap.wallet_address] = snap.timestamp
@@ -252,7 +217,6 @@ async def detect_whale_flips(
         bearish_count = len(bearish_flips)
         majority_threshold = max(1, round(total_whales * threshold_pct))
 
-        # Determine direction
         if bullish_count > bearish_count:
             flip_count = bullish_count
             direction = "bullish"
@@ -266,7 +230,6 @@ async def detect_whale_flips(
             direction = "neutral"
             flipped_whales = []
 
-        # Major alert if >= 60% of whales flipped
         is_major = flip_count >= majority_threshold
 
         return {
@@ -295,10 +258,6 @@ async def detect_whale_flips(
             "alert_type": None
         }
 
-# ─────────────────────────────────────────
-# Main unified signal calculator
-# ─────────────────────────────────────────
-
 async def _timed(label: str, coro):
     """Diagnostic wrapper: times an individual coroutine inside a gather()."""
     t = time.monotonic()
@@ -314,26 +273,17 @@ async def calculate_unified_signal(
     price_map: dict
 ) -> dict:
 
-    # MVRV/NUPL/SOPR share the same `db` session and touch the DB
-    # (read + possible commit) via metric_cache, so they run sequentially
-    # to avoid concurrent use of one AsyncSession, which SQLAlchemy
-    # async does not support safely.
     t0 = time.monotonic()
     mvrv_z = await get_latest_mvrv_zscore(db)
     nupl = await get_latest_nupl(db)
     sopr = await get_latest_sopr(db)
     print(f"timing: unified_signal - mvrv/nupl/sopr cache reads (sequential) = {time.monotonic()-t0:.2f}s")
 
-    # OI change and whale-flip detection each make 2 sequential
-    # db.execute() calls against the SAME `db` AsyncSession. Running
-    # them concurrently via gather() shares one session across
-    # concurrent coroutines - the exact unsafe pattern already avoided
-    # above for MVRV/NUPL/SOPR, but this pre-existing pairing was
-    # overlooked until now. Near-identical ~4-5s latency on both despite
-    # a 300x difference in table size (3K vs 932K rows), plus a
-    # proven-fast raw connection (13ms for SELECT 1), points to
-    # connection-level contention from sharing one session, not query
-    # complexity or table size. Sequential, like the block above.
+    # Divergence detector also reads via this same db session
+    # (mvrv_history), so it stays sequential too - same reasoning as
+    # the block above and the oi_change/whale_flips pairing below.
+    divergence = await _timed("detect_price_onchain_divergence", detect_price_onchain_divergence(db))
+
     oi_change = await _timed("get_btc_oi_change", get_btc_oi_change(db))
     flip_result = await _timed("detect_whale_flips", detect_whale_flips(db, current_states, price_map))
 
@@ -341,7 +291,6 @@ async def calculate_unified_signal(
     flip_count = flip_data["flip_count"]
     flip_dir = flip_data["direction"]
 
-    # Convert each metric to -100/+100 score
     scores = {
         "wsi":        wsi_to_score(wsi),
         "funding":    funding_to_score(funding),
@@ -351,11 +300,17 @@ async def calculate_unified_signal(
         "oi_change":  oi_to_score(oi_change, wsi),
     }
 
-    # Weighted sum
     total = sum(scores[k] * WEIGHTS[k] / 100 for k in WEIGHTS)
     total = round(max(-100, min(100, total)), 1)
 
     signal = score_to_signal(total, scores.get('mvrv', 0)*1.0, scores.get('nupl', 0)*1.0, scores.get('sopr', 0)*1.0)
+
+    divergence_direction = divergence.get("direction")
+    divergence_alert_type = (
+        "BEARISH DIVERGENCE — TOP WARNING" if divergence_direction == "bearish"
+        else "BULLISH DIVERGENCE — BOTTOM WARNING" if divergence_direction == "bullish"
+        else None
+    )
 
     return {
         "score": total,
@@ -368,6 +323,17 @@ async def calculate_unified_signal(
             "flipped_whales": flip_data["flipped_whales"],
             "total_whales":   flip_data["total_whales"],
             "threshold":      flip_data["majority_threshold"],
+        },
+        "divergence_alert": {
+            "is_active":           divergence.get("is_active", False),
+            "direction":           divergence_direction,
+            "alert_type":          divergence_alert_type,
+            "latest_price":        divergence.get("latest_price"),
+            "latest_zscore":       divergence.get("latest_zscore"),
+            "rolling_high_price":  divergence.get("rolling_high_price"),
+            "rolling_high_zscore": divergence.get("rolling_high_zscore"),
+            "rolling_low_price":   divergence.get("rolling_low_price"),
+            "rolling_low_zscore":  divergence.get("rolling_low_zscore"),
         },
         "components": {
             "wsi_score":        round(scores["wsi"] * WEIGHTS["wsi"] / 100, 2),
