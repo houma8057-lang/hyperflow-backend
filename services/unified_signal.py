@@ -10,6 +10,7 @@ from services.bgeometrics import (
     mvrv_zscore_to_score, nupl_to_score, sopr_to_score
 )
 from services.divergence import detect_price_onchain_divergence
+from services.rsi_divergence import check_rsi_failure_swing
 
 WEIGHTS = {
     "wsi":        25,
@@ -34,12 +35,6 @@ def whale_flip_to_score(flips: int, direction: str) -> float:
     return -score if direction == "bullish" else score
 
 def oi_to_score(oi_change_pct: float, wsi: float) -> float:
-    """
-    OI change combined with WSI direction.
-    OI dropping + WSI negative = closing SHORTs = bottom = -100
-    OI rising  + WSI positive = opening LONGs  = top    = +100
-    OI change alone without direction context = weaker signal.
-    """
     if abs(oi_change_pct) < 2:
         return 0.0
 
@@ -82,6 +77,13 @@ def oi_to_score(oi_change_pct: float, wsi: float) -> float:
 # earlier local extreme to diverge against - structurally different
 # from a multi-attempt topping process, not a gap in the tool).
 #
+# UPDATE (2026-08-04): added services/rsi_divergence.py, an RSI Failure
+# Swing detector (momentum-based, orthogonal to MVRV's on-chain
+# valuation basis). Backtested with an explicit freshness window (45
+# days) after an earlier version was found to report a single break as
+# "confirmed" unchanged for ~4 months. With that fix, it stayed fresh
+# and active through both the Oct 2025 top and the Nov 2022 FTX bottom.
+#
 def score_to_signal(score: float, mvrv_score: float = 0.0, nupl_score: float = 0.0, sopr_score: float = 0.0) -> str:
     on_chain = [mvrv_score, nupl_score, sopr_score]
 
@@ -99,10 +101,6 @@ def score_to_signal(score: float, mvrv_score: float = 0.0, nupl_score: float = 0
         return "WEAK SELL"
 
 async def get_btc_oi_change(db: AsyncSession) -> float:
-    """
-    Compare BTC OI now vs 24h ago.
-    Returns percentage change.
-    """
     try:
         from models import OIHistory
         now = datetime.utcnow()
@@ -142,11 +140,6 @@ async def detect_whale_flips(
     current_states: list,
     price_map: dict
 ) -> dict:
-    """
-    Detect whale direction changes vs 24h ago.
-    Uses percentage threshold (60%) so it scales automatically
-    when new whales are added.
-    """
     try:
         ago24 = datetime.utcnow() - timedelta(hours=24)
         from models import PositionSnapshot, Wallet
@@ -279,10 +272,12 @@ async def calculate_unified_signal(
     sopr = await get_latest_sopr(db)
     print(f"timing: unified_signal - mvrv/nupl/sopr cache reads (sequential) = {time.monotonic()-t0:.2f}s")
 
-    # Divergence detector also reads via this same db session
-    # (mvrv_history), so it stays sequential too - same reasoning as
-    # the block above and the oi_change/whale_flips pairing below.
+    # Divergence detector and RSI failure-swing both read via this same
+    # db session (mvrv_history), so they stay sequential too - same
+    # reasoning as the block above and the oi_change/whale_flips pairing
+    # below.
     divergence = await _timed("detect_price_onchain_divergence", detect_price_onchain_divergence(db))
+    rsi_result = await _timed("check_rsi_failure_swing", check_rsi_failure_swing(db))
 
     oi_change = await _timed("get_btc_oi_change", get_btc_oi_change(db))
     flip_result = await _timed("detect_whale_flips", detect_whale_flips(db, current_states, price_map))
@@ -312,6 +307,26 @@ async def calculate_unified_signal(
         else None
     )
 
+    rsi_bearish = rsi_result.get("bearish", {}) or {}
+    rsi_bullish = rsi_result.get("bullish", {}) or {}
+    if rsi_bearish.get("stage") == "confirmed":
+        rsi_direction = "bearish"
+        rsi_break_date = rsi_bearish.get("break_date")
+        rsi_days_since = rsi_bearish.get("days_since_break")
+    elif rsi_bullish.get("stage") == "confirmed":
+        rsi_direction = "bullish"
+        rsi_break_date = rsi_bullish.get("break_date")
+        rsi_days_since = rsi_bullish.get("days_since_break")
+    else:
+        rsi_direction = None
+        rsi_break_date = None
+        rsi_days_since = None
+    rsi_alert_type = (
+        "RSI FAILURE SWING — TOP WARNING" if rsi_direction == "bearish"
+        else "RSI FAILURE SWING — BOTTOM WARNING" if rsi_direction == "bullish"
+        else None
+    )
+
     return {
         "score": total,
         "signal": signal,
@@ -334,6 +349,14 @@ async def calculate_unified_signal(
             "rolling_high_zscore": divergence.get("rolling_high_zscore"),
             "rolling_low_price":   divergence.get("rolling_low_price"),
             "rolling_low_zscore":  divergence.get("rolling_low_zscore"),
+        },
+        "rsi_failure_swing_alert": {
+            "is_active":        rsi_direction is not None,
+            "direction":        rsi_direction,
+            "alert_type":       rsi_alert_type,
+            "latest_rsi":       rsi_result.get("latest_rsi"),
+            "break_date":       rsi_break_date,
+            "days_since_break": rsi_days_since,
         },
         "components": {
             "wsi_score":        round(scores["wsi"] * WEIGHTS["wsi"] / 100, 2),
