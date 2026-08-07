@@ -307,20 +307,25 @@ async def calculate_unified_signal(
         else None
     )
 
+    def _point(e):
+        return {"date": e.get("date"), "value": round(e.get("value", 0), 1)} if e else None
+
     rsi_bearish = rsi_result.get("bearish", {}) or {}
     rsi_bullish = rsi_result.get("bullish", {}) or {}
     if rsi_bearish.get("stage") == "confirmed":
         rsi_direction = "bearish"
-        rsi_break_date = rsi_bearish.get("break_date")
-        rsi_days_since = rsi_bearish.get("days_since_break")
+        rsi_pattern = rsi_bearish
+        rsi_points = (rsi_pattern.get("peak_A"), rsi_pattern.get("trough_T"), rsi_pattern.get("peak_B"))
     elif rsi_bullish.get("stage") == "confirmed":
         rsi_direction = "bullish"
-        rsi_break_date = rsi_bullish.get("break_date")
-        rsi_days_since = rsi_bullish.get("days_since_break")
+        rsi_pattern = rsi_bullish
+        rsi_points = (rsi_pattern.get("trough_A"), rsi_pattern.get("peak_T"), rsi_pattern.get("trough_B"))
     else:
         rsi_direction = None
-        rsi_break_date = None
-        rsi_days_since = None
+        rsi_pattern = {}
+        rsi_points = (None, None, None)
+    rsi_break_date = rsi_pattern.get("break_date")
+    rsi_days_since = rsi_pattern.get("days_since_break")
     rsi_alert_type = (
         "RSI FAILURE SWING — TOP WARNING" if rsi_direction == "bearish"
         else "RSI FAILURE SWING — BOTTOM WARNING" if rsi_direction == "bullish"
@@ -357,6 +362,9 @@ async def calculate_unified_signal(
             "latest_rsi":       rsi_result.get("latest_rsi"),
             "break_date":       rsi_break_date,
             "days_since_break": rsi_days_since,
+            "point_1":          _point(rsi_points[0]),
+            "point_2":          _point(rsi_points[1]),
+            "point_3":          _point(rsi_points[2]),
         },
         "components": {
             "wsi_score":        round(scores["wsi"] * WEIGHTS["wsi"] / 100, 2),
