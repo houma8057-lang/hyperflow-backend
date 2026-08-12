@@ -103,3 +103,41 @@ async def diag_metric_cache_check(db: AsyncSession = Depends(get_db)):
             for r in rows
         ],
     }
+
+@router.get("/diag/mvrv-score-backtest")
+async def diag_mvrv_score_backtest(db: AsyncSession = Depends(get_db)):
+    """Temporary diagnostic endpoint. Applies the live mvrv_zscore_to_score
+    formula to every historical mvrv_history row that has a btc_price,
+    returning (date, zscore, score, btc_price) for each. Lets us visually
+    check whether the score behaves sensibly across the full ~4-year
+    history and actually reaches near +/-100 at known past
+    tops/bottoms (Oct 2025 top, Nov 2022 FTX bottom, Dec 2024 local
+    on-chain extreme). Safe to remove once its job is done."""
+    from sqlalchemy import select
+    from models import MVRVHistory
+    from services.bgeometrics import mvrv_zscore_to_score
+
+    rows = (await db.execute(
+        select(MVRVHistory)
+        .where(MVRVHistory.btc_price.isnot(None))
+        .order_by(MVRVHistory.date)
+    )).scalars().all()
+
+    series = []
+    for r in rows:
+        series.append({
+            "date": r.date,
+            "zscore": r.zscore,
+            "score": mvrv_zscore_to_score(r.zscore),
+            "btc_price": r.btc_price,
+        })
+
+    max_score_row = max(series, key=lambda x: x["score"]) if series else None
+    min_score_row = min(series, key=lambda x: x["score"]) if series else None
+
+    return {
+        "total_rows": len(series),
+        "max_score": max_score_row,
+        "min_score": min_score_row,
+        "series": series,
+    }
