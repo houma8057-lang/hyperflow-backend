@@ -85,3 +85,21 @@ async def diag_data_range_check(db: AsyncSession = Depends(get_db)):
     }
 
     return result
+
+@router.get("/diag/metric-cache-check")
+async def diag_metric_cache_check(db: AsyncSession = Depends(get_db)):
+    """Temporary diagnostic endpoint. Confirms whether metric_cache holds
+    any historical series or just the single latest value per metric key
+    (NUPL, SOPR have no dedicated history table like mvrv_history does).
+    Safe to remove once its job is done."""
+    from sqlalchemy import select
+    from models import MetricCache
+
+    rows = (await db.execute(select(MetricCache))).scalars().all()
+    return {
+        "total_rows": len(rows),
+        "rows": [
+            {"metric": r.metric, "value": r.value, "fetched_at": r.fetched_at.isoformat()}
+            for r in rows
+        ],
+    }
