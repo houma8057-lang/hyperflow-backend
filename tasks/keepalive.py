@@ -12,5 +12,5 @@ def start_keepalive():
     async def loop():
         while True:
             await ping_self()
-            await asyncio.sleep(300)  # كل 5 دقائق
+            await asyncio.sleep(300)  # every 5 minutes
     asyncio.create_task(loop())
