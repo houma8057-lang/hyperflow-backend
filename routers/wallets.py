@@ -37,3 +37,33 @@ async def delete_wallet(address: str, db: AsyncSession = Depends(get_db)):
     await db.delete(w)
     await db.commit()
     return {"deleted": address}
+
+@router.get("/diag/bgeometrics-history-check")
+async def diag_bgeometrics_history_check():
+    """Temporary diagnostic endpoint. Tests whether the nupl and sopr
+    BGeometrics endpoints support a limit parameter beyond 1, unlike the
+    current _fetch_latest() usage which always requests limit=1. Uses
+    exactly 2 BGeometrics API calls total (one per metric) to conserve
+    the tight free-tier quota (8-10 req/hour, 15 req/day). Safe to
+    remove once its job is done."""
+    import httpx
+    from services.bgeometrics import BGEOMETRICS_TOKEN, BASE_URL
+
+    result = {}
+    async with httpx.AsyncClient(timeout=15) as client:
+        for metric, endpoint in [("nupl", "nupl"), ("sopr", "sopr")]:
+            try:
+                resp = await client.get(
+                    f"{BASE_URL}/{endpoint}",
+                    params={"token": BGEOMETRICS_TOKEN, "limit": 10}
+                )
+                data = resp.json()
+                result[metric] = {
+                    "status_code": resp.status_code,
+                    "rows_returned": len(data) if isinstance(data, list) else None,
+                    "raw_sample": data if isinstance(data, list) else data,
+                }
+            except Exception as e:
+                result[metric] = {"error": str(e)}
+
+    return result
